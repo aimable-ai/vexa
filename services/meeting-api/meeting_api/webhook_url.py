@@ -7,8 +7,14 @@ Reference: OWASP SSRF Prevention Cheat Sheet
 """
 
 import ipaddress
+import os
 import socket
 from urllib.parse import urlparse
+
+
+# Self-hosted opt-out for private/internal webhook targets (e.g. an Aimable
+# instance reachable only via host.docker.internal on the same host).
+_ALLOW_PRIVATE_WEBHOOKS = os.getenv("ALLOW_PRIVATE_WEBHOOKS", "").lower() in ("1", "true", "yes")
 
 
 # Blocked IP ranges per OWASP (localhost, private, link-local, multicast)
@@ -106,6 +112,14 @@ def validate_webhook_url(url: str) -> str:
     hostname = parsed.hostname
     if not hostname:
         raise ValueError("Webhook URL must have a valid hostname")
+
+    # Self-hosted opt-out: when the host app (e.g. Aimable) lives on the same
+    # machine, its webhook endpoint is only reachable via a private/internal
+    # address (host.docker.internal, 127.0.0.1, LAN IP). Mirrors runtime-api's
+    # ALLOW_PRIVATE_CALLBACKS. Off by default — only the scheme/hostname checks
+    # above still apply when enabled.
+    if _ALLOW_PRIVATE_WEBHOOKS:
+        return url
 
     # Hostname blocklist (before DNS to catch internal names)
     if _is_blocked_hostname(hostname):

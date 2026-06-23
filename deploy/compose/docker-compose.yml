@@ -101,6 +101,9 @@ services:
       - ADMIN_API_TOKEN=${ADMIN_TOKEN:-changeme}
       - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-vexa-internal-secret}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Allow registering webhooks to private/internal targets (self-hosted
+      # Aimable via host.docker.internal). admin-api validates /user/webhook.
+      - ALLOW_PRIVATE_WEBHOOKS=${ALLOW_PRIVATE_WEBHOOKS:-}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/')"]
       interval: 30s
@@ -127,6 +130,10 @@ services:
     environment:
       - DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-vexa}_vexa
       - AGENT_IMAGE=${AGENT_IMAGE}
+      # Injected into spawned agent containers via profiles.yaml (agent profile
+      # uses ${ANTHROPIC_API_KEY}). Without this the in-container claude CLI
+      # cannot authenticate. Opt-in for the NO-SHIP agent-api chat feature.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - BROWSER_IMAGE=${BROWSER_IMAGE}
       - REDIS_URL=redis://redis:6379
       - TRANSCRIPTION_SERVICE_URL=${TRANSCRIPTION_SERVICE_URL:-}
@@ -161,46 +168,50 @@ services:
       - vexa
     restart: unless-stopped
 
-  # agent-api: NO-SHIP for 0.10 — not included in release
-  # agent-api:
-  #   build:
-  #     context: ../..
-  #     dockerfile: services/agent-api/Dockerfile
-  #   image: vexaai/agent-api:${IMAGE_TAG}
-  #   ports:
-  #     - "${AGENT_API_PORT:-8100}:8100"
-  #   environment:
-  #     - DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-vexa}_vexa
-  #     - AGENT_IMAGE=${AGENT_IMAGE:-vexaai/vexa-agent:${IMAGE_TAG}}
-  #     - STORAGE_BACKEND=s3
-  #     - S3_ENDPOINT=http://minio:9000
-  #     - S3_ACCESS_KEY=${MINIO_ACCESS_KEY:-vexa-access-key}
-  #     - S3_SECRET_KEY=${MINIO_SECRET_KEY:-vexa-secret-key}
-  #     - S3_BUCKET=${MINIO_BUCKET:-vexa}
-  #     - CLAUDE_CREDENTIALS_PATH=${CLAUDE_CREDENTIALS_PATH}
-  #     - CLAUDE_JSON_PATH=${CLAUDE_JSON_PATH}
-  #     - IDLE_TIMEOUT=${IDLE_TIMEOUT:-300}
-  #     - REDIS_URL=redis://redis:6379
-  #     - RUNTIME_API_URL=http://runtime-api:8090
-  #     - ADMIN_API_URL=http://admin-api:8001
-  #     - ADMIN_API_TOKEN=${ADMIN_TOKEN:-vexa-admin-token}
-  #     - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-vexa-internal-secret}
-  #     - AGENT_API_INTERNAL_URL=http://agent-api:8100
-  #     - API_KEY=${BOT_API_TOKEN:-}
-  #     - BOT_API_TOKEN=${BOT_API_TOKEN:-}
-  #     - LOG_LEVEL=${LOG_LEVEL:-INFO}
-  #   volumes:
-  #     - /var/run/docker.sock:/var/run/docker.sock
-  #   depends_on:
-  #     minio-init:
-  #       condition: service_completed_successfully
-  #     redis:
-  #       condition: service_started
-  #     runtime-api:
-  #       condition: service_started
-  #   networks:
-  #     - vexa
-  #   restart: unless-stopped
+  # agent-api: NO-SHIP for 0.10 upstream, but enabled here (opt-in) to power the
+  # meeting-aware chat used via Aimable. Requires the locally-built
+  # vexaai/agent-api + vexaai/vexa-agent images and ANTHROPIC_API_KEY in .env.
+  agent-api:
+    build:
+      context: ../..
+      dockerfile: services/agent-api/Dockerfile
+    image: vexaai/agent-api:${IMAGE_TAG}
+    ports:
+      - "${AGENT_API_PORT:-8100}:8100"
+    environment:
+      - DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-vexa}_vexa
+      - AGENT_IMAGE=${AGENT_IMAGE:-vexaai/vexa-agent:${IMAGE_TAG}}
+      # Auth for the in-container claude CLI (alternative to CLAUDE_*_PATH OAuth).
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - STORAGE_BACKEND=s3
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=${MINIO_ACCESS_KEY:-vexa-access-key}
+      - S3_SECRET_KEY=${MINIO_SECRET_KEY:-vexa-secret-key}
+      - S3_BUCKET=${MINIO_BUCKET:-vexa}
+      - CLAUDE_CREDENTIALS_PATH=${CLAUDE_CREDENTIALS_PATH}
+      - CLAUDE_JSON_PATH=${CLAUDE_JSON_PATH}
+      - IDLE_TIMEOUT=${IDLE_TIMEOUT:-300}
+      - REDIS_URL=redis://redis:6379
+      - RUNTIME_API_URL=http://runtime-api:8090
+      - ADMIN_API_URL=http://admin-api:8001
+      - ADMIN_API_TOKEN=${ADMIN_TOKEN:-vexa-admin-token}
+      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-vexa-internal-secret}
+      - AGENT_API_INTERNAL_URL=http://agent-api:8100
+      - API_KEY=${BOT_API_TOKEN:-}
+      - BOT_API_TOKEN=${BOT_API_TOKEN:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      runtime-api:
+        condition: service_started
+    networks:
+      - vexa
+    restart: unless-stopped
 
   api-gateway:
     build:
@@ -262,6 +273,9 @@ services:
       - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-vexa-internal-secret}
       - RUNTIME_API_URL=http://runtime-api:8090
       - RUNTIME_API_TOKEN=${BOT_API_TOKEN:-}
+      # Allow webhooks to private/internal targets (self-hosted Aimable on the
+      # same host, reachable only via host.docker.internal). Off in prod.
+      - ALLOW_PRIVATE_WEBHOOKS=${ALLOW_PRIVATE_WEBHOOKS:-}
       - MEETING_API_URL=http://meeting-api:8080
       - BOT_IMAGE_NAME=${BROWSER_IMAGE}
       - DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-vexa}_vexa
@@ -406,34 +420,36 @@ services:
       - vexa
     restart: unless-stopped
 
-  # calendar-service: NO-SHIP for 0.10 — not included in release
-  # calendar-service:
-  #   build:
-  #     context: ../..
-  #     dockerfile: services/calendar-service/Dockerfile
-  #   image: vexaai/calendar-service:${IMAGE_TAG}
-  #   ports:
-  #     - "${CALENDAR_SERVICE_PORT:-8050}:8050"
-  #   environment:
-  #     - DB_HOST=postgres
-  #     - DB_PORT=5432
-  #     - DB_NAME=${DB_NAME:-vexa}
-  #     - DB_USER=${DB_USER:-postgres}
-  #     - DB_PASSWORD=${DB_PASSWORD:-postgres}
-  #     - DB_SSL_MODE=disable
-  #     - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
-  #     - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
-  #     - MEETING_API_URL=http://meeting-api:8080
-  #     - BOT_API_TOKEN=${BOT_API_TOKEN:-}
-  #     - SYNC_INTERVAL_SECONDS=${CALENDAR_SYNC_INTERVAL:-300}
-  #     - DEFAULT_LEAD_TIME_MINUTES=${CALENDAR_LEAD_TIME:-2}
-  #     - LOG_LEVEL=${LOG_LEVEL:-INFO}
-  #   depends_on:
-  #     - postgres
-  #     - meeting-api
-  #   networks:
-  #     - vexa
-  #   restart: unless-stopped
+  # calendar-service: NO-SHIP for 0.10 upstream, enabled here (opt-in) for
+  # Google-calendar auto-join via Aimable. Needs GOOGLE_CLIENT_ID/SECRET in
+  # .env for real OAuth; without them the service runs but cannot sync.
+  calendar-service:
+    build:
+      context: ../..
+      dockerfile: services/calendar-service/Dockerfile
+    image: vexaai/calendar-service:${IMAGE_TAG}
+    ports:
+      - "${CALENDAR_SERVICE_PORT:-8050}:8050"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-vexa}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-postgres}
+      - DB_SSL_MODE=disable
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - MEETING_API_URL=http://meeting-api:8080
+      - BOT_API_TOKEN=${BOT_API_TOKEN:-}
+      - SYNC_INTERVAL_SECONDS=${CALENDAR_SYNC_INTERVAL:-300}
+      - DEFAULT_LEAD_TIME_MINUTES=${CALENDAR_LEAD_TIME:-2}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - postgres
+      - meeting-api
+    networks:
+      - vexa
+    restart: unless-stopped
 
 volumes:
   redis-data:

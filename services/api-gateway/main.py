@@ -678,6 +678,16 @@ async def calendar_preferences_proxy(request: Request):
     url = f"{CALENDAR_SERVICE_URL}/calendar/preferences"
     return await forward_request(app.state.http_client, "PUT", url, request)
 
+@app.put("/calendar/credentials",
+         tags=["Calendar"],
+         summary="Set per-user Google OAuth client creds (host-app driven)",
+         dependencies=[Depends(api_key_scheme)])
+async def calendar_credentials_proxy(request: Request):
+    if not CALENDAR_SERVICE_URL:
+        raise HTTPException(status_code=501, detail="Calendar service not configured")
+    url = f"{CALENDAR_SERVICE_URL}/calendar/credentials"
+    return await forward_request(app.state.http_client, "PUT", url, request)
+
 # --- END Calendar Routes ---
 
 # --- Recording Routes (proxy to Bot Manager) ---

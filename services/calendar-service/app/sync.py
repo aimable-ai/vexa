@@ -45,9 +45,15 @@ async def sync_user_calendar(user_id: int, db: AsyncSession) -> int:
         logger.info(f"User {user_id} has no Google Calendar refresh token")
         return 0
 
+    # Per-user OAuth client creds (pushed by the host app, e.g. Aimable, so the
+    # tenant's own Google client is used); fall back to the global env client.
+    client = gc_data.get("client", {})
+    client_id = client.get("client_id") or GOOGLE_CLIENT_ID
+    client_secret = client.get("client_secret") or GOOGLE_CLIENT_SECRET
+
     # Refresh access token
     access_token, expires_in = await refresh_access_token(
-        GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, refresh_token
+        client_id, client_secret, refresh_token
     )
 
     # Get existing sync token for incremental sync

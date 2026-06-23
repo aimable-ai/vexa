@@ -5,9 +5,9 @@ import asyncio
 import logging
 
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from meeting_api.database import get_db, init_db
 from meeting_api.models import CalendarEvent
@@ -165,6 +165,44 @@ async def update_preferences(
     )
     await db.commit()
     return {"status": "updated", "preferences": gc["preferences"]}
+
+
+@app.put("/calendar/credentials")
+async def set_calendar_credentials(
+    user_id: int = Query(...),
+    body: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Store the per-user Google OAuth client (client_id/secret) and, optionally,
+    the OAuth refresh_token. Lets the host app (Aimable) drive per-tenant
+    calendar auth instead of relying on this service's single global env client.
+    Sync uses these per-user creds when present (see sync.sync_user_calendar)."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user_data = dict(user.data or {})
+    gc = dict(user_data.get("google_calendar", {}))
+    client = dict(gc.get("client", {}))
+    if body.get("client_id"):
+        client["client_id"] = body["client_id"]
+    if body.get("client_secret"):
+        client["client_secret"] = body["client_secret"]
+    gc["client"] = client
+    if body.get("refresh_token"):
+        oauth = dict(gc.get("oauth", {}))
+        oauth["refresh_token"] = body["refresh_token"]
+        gc["oauth"] = oauth
+    user_data["google_calendar"] = gc
+
+    await db.execute(update(User).where(User.id == user_id).values(data=user_data))
+    await db.commit()
+    return {
+        "status": "ok",
+        "has_client": bool(client.get("client_id")),
+        "has_oauth": bool(gc.get("oauth", {}).get("refresh_token")),
+    }
 
 
 if __name__ == "__main__":

@@ -1,0 +1,9 @@
+# Thin patch over the proven-working registry image: only tweak the 4 chunking
+# constants in the compiled dist (no recompile → join behaviour stays identical).
+FROM vexaai/vexa-bot:registry-backup
+RUN sed -i \
+  -e 's/minAudioDuration: 3,/minAudioDuration: 1.2,/' \
+  -e 's/submitInterval: 2,/submitInterval: 1.2,/' \
+  -e 's/maxBufferDuration: 30,/maxBufferDuration: 6,/' \
+  -e 's/idleTimeoutSec: 15,/idleTimeoutSec: 3,/' \
+  /app/vexa-bot/core/dist/index.js
