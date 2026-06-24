@@ -2489,6 +2489,13 @@ export async function runBot(botConfig: BotConfig): Promise<void> {// Store botC
     page = await context.newPage();
   }
 
+  // Bump Playwright's default timeout from 30s to 60s. The 30s default trips
+  // page.screenshot (waits for fonts) and waitFor* selectors on cold-started
+  // Chromium + slow networks, killing joins with TimeoutError before they
+  // even reach the join button. 60s gives Google Meet's heavy initial load
+  // room to breathe.
+  page.setDefaultTimeout(60000);
+
   // Forward browser console messages tagged [Vexa] to Node.js log
   // Also capture getUserMedia and RTC-related messages for diagnostics
   page.on('console', (msg) => {

@@ -1,9 +1,33 @@
 # Thin patch over the proven-working registry image: only tweak the 4 chunking
 # constants in the compiled dist (no recompile → join behaviour stays identical).
 FROM vexaai/vexa-bot:registry-backup
+# Chunking tuned for NL Whisper quality. Earlier (1.2 / 6 / 3) gave fast
+# drafts but Whisper hallucinated on <1.5s chunks ("Dank u wel", "Het is
+# warm") → discarded by LOW QUALITY → near-empty transcripts. Whisper needs
+# ~3s+ context for reliable Dutch. minAudioDuration 4 = real chunks, not
+# noise; maxBufferDuration 12 = force-flush before the 30s original (still
+# acceptable live feel); idleTimeoutSec 5 = end-of-phrase tail.
 RUN sed -i \
-  -e 's/minAudioDuration: 3,/minAudioDuration: 1.2,/' \
-  -e 's/submitInterval: 2,/submitInterval: 1.2,/' \
-  -e 's/maxBufferDuration: 30,/maxBufferDuration: 6,/' \
-  -e 's/idleTimeoutSec: 15,/idleTimeoutSec: 3,/' \
+  -e 's/minAudioDuration: 3,/minAudioDuration: 4,/' \
+  -e 's/submitInterval: 2,/submitInterval: 2,/' \
+  -e 's/maxBufferDuration: 30,/maxBufferDuration: 12,/' \
+  -e 's/idleTimeoutSec: 15,/idleTimeoutSec: 5,/' \
+  /app/vexa-bot/core/dist/index.js
+
+# Fix slow Google Meet page-load timing out on cold-started Chromium: switch
+# waitUntil from "domcontentloaded" to "commit" (returns once navigation
+# commits, before scripts finish) and bump the page.goto timeout to 60s.
+# Default 30s + DOMContentLoaded was tripping on slow networks → bot exited
+# with reason "join_meeting_error" before ever trying to join.
+RUN sed -i \
+  -e 's|page\.goto(meetingUrl, { waitUntil: "domcontentloaded" })|page.goto(meetingUrl, { waitUntil: "commit", timeout: 60000 })|' \
+  /app/vexa-bot/core/dist/platforms/googlemeet/join.js
+
+# Bump Playwright's default 30s page timeout to 60s. The 30s default trips
+# page.screenshot (which waits for fonts to load) and waitFor* selectors on
+# cold-started Chromium, killing the join with a TimeoutError BEFORE the bot
+# ever reaches the join button. Setting the default once after page-create
+# covers every page.* call in one go (cleaner than wrapping each screenshot).
+RUN sed -i \
+  -e '/await context\.newPage();/a\        page.setDefaultTimeout(60000);' \
   /app/vexa-bot/core/dist/index.js

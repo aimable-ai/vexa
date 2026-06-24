@@ -69,7 +69,15 @@ export async function joinGoogleMeeting(
   botName: string,
   botConfig: BotConfig
 ): Promise<void> {
-  await page.goto(meetingUrl, { waitUntil: "domcontentloaded" });
+  // waitUntil "commit" returns as soon as the navigation commits (HTTP
+  // response started) instead of waiting for DOMContentLoaded. Google Meet's
+  // initial page pulls in heavy scripts; on a cold-started bot Chromium
+  // we've seen page.goto exceed the default 30s timeout to DOMContentLoaded
+  // (causing "join_meeting_error" before the bot ever tries to find the
+  // join button). The downstream join logic has its own explicit waits for
+  // the name input / join button, so DOMContentLoaded here is unnecessary.
+  // Bump timeout to 60s as a defensive backstop for slow networks.
+  await page.goto(meetingUrl, { waitUntil: "commit", timeout: 60000 });
   await page.bringToFront();
 
   // Take screenshot after navigation
