@@ -170,7 +170,16 @@ async def schedule_upcoming_bots(db: AsyncSession) -> int:
                     json={
                         "platform": event.platform,
                         "native_meeting_id": _extract_native_id(event.meeting_url, event.platform),
-                        "bot_name": f"Vexa - {event.title or 'Calendar'}",
+                        # Aimable branding (AIM-951): participants see "Aimable
+                        # Capture - <meeting title>" in the Meet participant list
+                        # so it's clear which meeting/series spawned the bot.
+                        "bot_name": f"Aimable Capture - {event.title or 'Calendar'}",
+                        # Logo shown on the bot's video tile via vexa-bot's
+                        # virtual-camera path (defaultAvatarUrl).
+                        "default_avatar_url": os.getenv(
+                            "DEFAULT_BOT_AVATAR_URL",
+                            "https://aimable.ai/assets/aimable-logo.svg",
+                        ),
                     },
                     headers={"X-API-Key": BOT_API_TOKEN},
                     timeout=30,

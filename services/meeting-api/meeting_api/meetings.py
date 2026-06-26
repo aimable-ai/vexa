@@ -54,6 +54,44 @@ from .post_meeting import run_all_tasks, run_status_webhook_task
 
 logger = logging.getLogger("meeting_api.meetings")
 
+
+_avatar_data_uri_cache: Dict[str, str] = {}
+
+
+def _url_to_data_uri(url: str) -> str:
+    """Resolve an avatar URL to a `data:<mime>;base64,…` payload (cached).
+    Bots load avatars with `crossOrigin="anonymous"` to keep the canvas
+    untainted for video capture; public CDNs usually don't serve CORS
+    headers, which makes those loads fail and leaves the bot tile black.
+    Data URIs are same-origin and side-step CORS. Already-data-URI inputs
+    pass through unchanged; fetch failures fall back to the raw URL so we
+    never block bot spawn."""
+    if not url or url.startswith("data:"):
+        return url
+    cached = _avatar_data_uri_cache.get(url)
+    if cached is not None:
+        return cached
+    try:
+        with httpx.Client(timeout=5.0, follow_redirects=True) as client:
+            resp = client.get(url)
+        resp.raise_for_status()
+        mime = resp.headers.get("content-type", "application/octet-stream").split(";")[0].strip()
+        b64 = base64.b64encode(resp.content).decode("ascii")
+        data_uri = f"data:{mime};base64,{b64}"
+        _avatar_data_uri_cache[url] = data_uri
+        logger.info("Cached avatar URL as data URI: %s (%d bytes, %s)", url, len(resp.content), mime)
+        return data_uri
+    except Exception as e:
+        logger.warning("Failed to fetch avatar from %s: %s — falling back to URL", url, e)
+        _avatar_data_uri_cache[url] = url
+        return url
+
+
+def _get_default_avatar_data_uri() -> str:
+    return _url_to_data_uri(
+        os.getenv("DEFAULT_BOT_AVATAR_URL", "https://aimable.ai/assets/aimable-logo.svg")
+    )
+
 router = APIRouter()
 
 
@@ -1080,7 +1118,10 @@ async def request_bot(
         "meeting_id": meeting_id,
         "platform": req.platform.value,
         "meetingUrl": constructed_url,
-        "botName": req.bot_name or f"VexaBot-{uuid_lib.uuid4().hex[:6]}",
+        # AIM-951: Aimable Capture branding as server-side default — applies to
+        # every spawn path (Aimable backend, calendar-service, Vexa-dashboard,
+        # external API). Override per-request by sending `bot_name`.
+        "botName": req.bot_name or os.getenv("DEFAULT_BOT_NAME", "Aimable Capture"),
         "token": meeting_token,
         "nativeMeetingId": native_meeting_id,
         "connectionId": connection_id,
@@ -1107,8 +1148,23 @@ async def request_bot(
         bot_config["recordingEnabled"] = bool(req.recording_enabled)
     if req.voice_agent_enabled is not None:
         bot_config["voiceAgentEnabled"] = bool(req.voice_agent_enabled)
-    if req.default_avatar_url:
-        bot_config["defaultAvatarUrl"] = req.default_avatar_url
+    # AIM-951: server-side default avatar (Aimable logo) so the bot's video
+    # tile is branded regardless of which client called /bots. Override per
+    # request via `default_avatar_url`; disable platform-wide via env.
+    # We fetch+base64 the URL once and cache as a data URI — needed because
+    # public CDNs typically don't serve CORS headers, and Chromium with
+    # `crossOrigin="anonymous"` (required to keep canvas non-tainted) drops
+    # those loads, leaving the bot tile black. Data URIs sidestep CORS.
+    # Convert ANY incoming avatar URL to a data URI here (centralised), so
+    # clients can just pass a public URL without worrying about CORS.
+    bot_config["defaultAvatarUrl"] = (
+        _url_to_data_uri(req.default_avatar_url) if req.default_avatar_url
+        else _get_default_avatar_data_uri()
+    )
+    # AIM-951: enable virtual camera by default so the avatar tile is
+    # actually broadcast (vexa-bot defaults this to false, which makes the
+    # avatar invisible — defeating the branding purpose). Disable via env.
+    bot_config["cameraEnabled"] = os.getenv("DEFAULT_BOT_CAMERA_ENABLED", "true").lower() != "false"
     if os.getenv("SHOW_AVATAR", "true").lower() == "false":
         bot_config["showAvatar"] = False
     if meeting_data.get("capture_modes"):
