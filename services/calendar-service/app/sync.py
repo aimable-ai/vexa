@@ -181,7 +181,24 @@ async def schedule_upcoming_bots(db: AsyncSession) -> int:
                             "https://aimable.ai/assets/aimable-logo.svg",
                         ),
                     },
-                    headers={"X-API-Key": BOT_API_TOKEN},
+                    headers={
+                        "X-API-Key": BOT_API_TOKEN,
+                        # Calendar-service bypasses the gateway, so the
+                        # gateway-injected `X-User-ID` / `X-User-Limits`
+                        # headers aren't there. Attribute the bot to the
+                        # calendar event's user so meeting-api stores
+                        # `meetings.user_id` correctly — without this the
+                        # row gets user_id=0 (no owner) and webhook
+                        # delivery, max-concurrent limits, and downstream
+                        # per-user reconciliation all break. Pass the
+                        # user's max_concurrent_bots so meeting-api
+                        # doesn't fall back to its default of 1 and reject
+                        # legit concurrent calendar bots.
+                        "X-User-ID": str(event.user_id),
+                        "X-User-Limits": str(
+                            int(getattr(user, "max_concurrent_bots", 1) or 1)
+                        ),
+                    },
                     timeout=30,
                 )
 

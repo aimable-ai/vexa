@@ -1019,14 +1019,28 @@ async def request_bot(
     else:
         meeting_data["recording_enabled"] = os.getenv("RECORDING_ENABLED", "true").lower() == "true"
 
-    # Store webhook config in meeting.data (from gateway headers or user config)
+    # Store webhook config in meeting.data. Gateway can inject via
+    # X-User-Webhook-* headers (preferred), but if those are absent fall back
+    # to the user's persisted webhook config in `user.data` — set via
+    # `PUT /user/webhook`. Without this fallback the persisted config was
+    # never consulted at spawn time and no webhooks were ever dispatched.
     webhook_url = request.headers.get("X-User-Webhook-URL", "")
+    webhook_secret = request.headers.get("X-User-Webhook-Secret", "")
+    webhook_events_raw = request.headers.get("X-User-Webhook-Events", "")
+    if not webhook_url:
+        user_data = current_user.data or {}
+        webhook_url = user_data.get("webhook_url") or ""
+        webhook_secret = webhook_secret or user_data.get("webhook_secret") or ""
+        if not webhook_events_raw:
+            persisted_events = user_data.get("webhook_events")
+            if isinstance(persisted_events, dict):
+                webhook_events_raw = ",".join(k for k, v in persisted_events.items() if v)
+            elif isinstance(persisted_events, list):
+                webhook_events_raw = ",".join(persisted_events)
     if webhook_url:
         meeting_data["webhook_url"] = webhook_url
-        webhook_secret = request.headers.get("X-User-Webhook-Secret", "")
         if webhook_secret:
             meeting_data["webhook_secret"] = webhook_secret
-        webhook_events_raw = request.headers.get("X-User-Webhook-Events", "")
         if webhook_events_raw:
             meeting_data["webhook_events"] = {
                 evt.strip(): True for evt in webhook_events_raw.split(",") if evt.strip()
