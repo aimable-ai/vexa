@@ -921,24 +921,17 @@ export class ScreenContentService {
         const img = new Image();
         img.crossOrigin = 'anonymous';
         img.onload = () => {
-          // Paper-cream background fills the whole canvas — matches Aimable's
-          // app theme; replaces the original black wash.
-          ctx.fillStyle = '#f5f1e8';
+          // Black background fills the whole canvas
+          ctx.fillStyle = '#000000';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-          // Small centered white rounded-rect "card" with a subtle drop
-          // shadow. Logo sits inside the card with padding around it.
-          // AIM-951 branding.
-          const cardSize = Math.round(Math.min(canvas.width, canvas.height) * 0.14);
+          // Draw a centered white rounded-rect "card" — gives the logo a
+          // clean frame and works for any logo (transparent SVG/PNG against
+          // black would otherwise look lost). AIM-951 branding.
+          const cardSize = Math.round(Math.min(canvas.width, canvas.height) * 0.28);
           const cardX = (canvas.width - cardSize) / 2;
           const cardY = (canvas.height - cardSize) / 2;
-          const radius = Math.round(cardSize * 0.16);
-
-          // Drop shadow under the card. Reset before drawing the logo so
-          // the logo itself isn't shadowed (only the card).
-          ctx.shadowColor = 'rgba(0, 0, 0, 0.12)';
-          ctx.shadowBlur = 14;
-          ctx.shadowOffsetY = 4;
+          const radius = Math.round(cardSize * 0.12);
           ctx.fillStyle = '#ffffff';
           ctx.beginPath();
           // roundRect is widely supported; fall back to rect if not.
@@ -949,13 +942,8 @@ export class ScreenContentService {
           }
           ctx.fill();
 
-          // Reset shadow state before drawing the logo on top of the card.
-          ctx.shadowColor = 'transparent';
-          ctx.shadowBlur = 0;
-          ctx.shadowOffsetY = 0;
-
-          // Logo sits inside the card with ~18% padding all around.
-          const pad = Math.round(cardSize * 0.18);
+          // Logo sits inside the card with ~14% padding all around.
+          const pad = Math.round(cardSize * 0.14);
           const inner = cardSize - pad * 2;
           const scale = Math.min(inner / img.width, inner / img.height);
           const w = img.width * scale;
@@ -966,8 +954,8 @@ export class ScreenContentService {
           resolve();
         };
         img.onerror = () => {
-          // Image failed: cream-only background (matches success-path bg).
-          ctx.fillStyle = '#f5f1e8';
+          // Image failed to load: show black only (never show text placeholder)
+          ctx.fillStyle = '#000000';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
           resolve();
         };
