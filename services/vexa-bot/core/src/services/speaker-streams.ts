@@ -198,7 +198,13 @@ export class SpeakerStreamManager {
     // find the longest common prefix across consecutive submissions. This is robust
     // to segment boundary shifts — only the leading WORDS need to be stable.
     if (segments && segments.length > 0) {
-      const currentWords = segments.flatMap(s => s.text.trim().split(/\s+/).filter(w => w.length > 0));
+      // AIM-1072 patch 1 — Whisper's leading `…` or `...` is metadata (marks
+      // "started transcribing mid-utterance"), not content. Strip before we
+      // build the word list, otherwise prefix-match breaks after every
+      // offset-advance during continuous speech and only 1 word/round
+      // confirms.
+      const stripEllipsis = (s: string) => s.replace(/^\s*(?:\.{2,}|…)\s*/, '');
+      const currentWords = segments.flatMap(s => stripEllipsis(s.text).trim().split(/\s+/).filter(w => w.length > 0));
       const prevWords = buffer.lastWords;
 
       // Find longest common word prefix between current and previous submission
@@ -250,7 +256,12 @@ export class SpeakerStreamManager {
             buffer.lastConfirmedText = seg.text.trim();
           }
           const lastConfirmedSeg = segments[confirmedSegCount - 1];
-          this.advanceOffset(buffer, lastConfirmedSeg.end);
+          // AIM-1072 patch 3 — hand the trailing unconfirmed words to
+          // advanceOffset so the next round can prefix-match against them
+          // immediately, instead of the 1-round dead-zone caused by wiping
+          // lastWords to [] on every confirmation.
+          const unconfirmedTail = currentWords.slice(prefixLen);
+          this.advanceOffset(buffer, lastConfirmedSeg.end, unconfirmedTail);
           buffer.windowStartMs = baseWindowMs + Math.floor(lastConfirmedSeg.end * 1000);
           return;
         }
@@ -400,11 +411,19 @@ export class SpeakerStreamManager {
     // Buffer too large — force-flush or trim
     if (totalSec > this.maxBufferDuration) {
       if (buffer.confirmedSamples === 0) {
-        // Nothing confirmed — confirmation never triggered. Force-flush whatever
-        // transcript we have to prevent monolith segments (e.g. 120s+ buffer).
-        if (buffer.lastTranscript) {
-          log(`[SpeakerStreams] Hard cap force-flush for "${buffer.speakerName}" (${totalSec.toFixed(1)}s > ${this.maxBufferDuration}s, no confirmation)`);
-          this.emitSegment(buffer, buffer.lastTranscript);
+        // AIM-1072 patch 2 — nothing confirmed in this whole window means
+        // Whisper's drafts kept shifting; the OLD behaviour just emitted
+        // `lastTranscript` (the last ~5-7s draft) and dropped 25+ seconds of
+        // real audio. Instead, submit the FULL buffer one last time via the
+        // normal Whisper path (confirmedSamples=0 so submitBuffer sends
+        // everything). The response comes back on the standard segment
+        // channel — no need to reason about "which draft is best" locally.
+        log(`[SpeakerStreams] Hard cap force-flush re-submit for "${buffer.speakerName}" (${totalSec.toFixed(1)}s > ${this.maxBufferDuration}s, no confirmation)`);
+        try {
+          await this.submitBuffer(buffer);
+        } catch (err) {
+          log(`[SpeakerStreams] Force-flush re-submit failed for "${buffer.speakerName}": ${err}`);
+          if (buffer.lastTranscript) this.emitSegment(buffer, buffer.lastTranscript);
         }
         this.fullReset(buffer);
         return;
@@ -483,7 +502,7 @@ export class SpeakerStreamManager {
    *                        submitted audio start). If undefined, trims the full
    *                        unconfirmed window (fallback, loses boundary context).
    */
-  private advanceOffset(buffer: SpeakerBuffer, segmentEndSec?: number): void {
+  private advanceOffset(buffer: SpeakerBuffer, segmentEndSec?: number, unconfirmedTail?: string[]): void {
     if (segmentEndSec !== undefined) {
       // Advance to Whisper's segment boundary — preserves audio context
       // after the boundary for the next submission
@@ -501,13 +520,18 @@ export class SpeakerStreamManager {
     // Trim confirmed chunks from the front to free memory
     this.trimBuffer(buffer);
 
-    // Reset confirmation state for the next segment window
-    buffer.lastTranscript = '';
-    buffer.confirmCount = 0;
-    buffer.lastWords = [];
+    // AIM-1072 patch 3 — keep the trailing unconfirmed words as anchor for
+    // the next round. Without this, `lastWords = []` after every confirmation
+    // creates a ~4s dead zone during which no new confirmation is possible
+    // (prevWords[i] doesn't exist to prefix-match against). Passing the tail
+    // in lets the next Whisper submission start with a real anchor.
+    const tail = (unconfirmedTail ?? []).filter(w => w.length > 0);
+    buffer.lastWords = tail;
+    buffer.lastTranscript = tail.join(' ');
+    buffer.confirmCount = tail.length > 0 ? 1 : 0;
     buffer.windowStartMs = Date.now();
 
-    log(`[SpeakerStreams] Offset advanced for "${buffer.speakerName}" (confirmed=${buffer.confirmedSamples}, total=${buffer.totalSamples}, trimmed to ${buffer.chunks.length} chunks)`);
+    log(`[SpeakerStreams] Offset advanced for "${buffer.speakerName}" (confirmed=${buffer.confirmedSamples}, total=${buffer.totalSamples}, trimmed to ${buffer.chunks.length} chunks, tail=${tail.length})`);
   }
 
   /**

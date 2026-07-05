@@ -603,3 +603,46 @@ async def delete_meeting(
             "meeting data anonymized"
         )
     }
+
+
+@router.delete("/meetings/{platform}/{native_meeting_id}/transcripts",
+              summary="Delete transcript segments only (keep recording + meeting)",
+              dependencies=[Depends(get_current_user)])
+async def delete_transcripts(
+    platform: Platform,
+    native_meeting_id: str,
+    current_user: UserProxy = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Narrow variant of DELETE /meetings/... that wipes ONLY the transcript
+    segments so that `POST /meetings/{id}/transcribe` can produce a fresh
+    Whisper batch. Keeps the recording, meeting record, and platform-specific
+    id intact — used by Aimable's Re-transcribe flow which needs a clean slate
+    without losing the meeting itself.
+    """
+    stmt = select(Meeting).where(
+        Meeting.user_id == current_user.id,
+        Meeting.platform == platform.value,
+        Meeting.platform_specific_id == native_meeting_id
+    ).order_by(Meeting.created_at.desc())
+    meeting = (await db.execute(stmt)).scalars().first()
+
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Meeting not found for platform {platform.value} and ID {native_meeting_id}"
+        )
+
+    result = await db.execute(select(Transcription).where(Transcription.meeting_id == meeting.id))
+    transcripts = result.scalars().all()
+    deleted = len(transcripts)
+    for transcript in transcripts:
+        await db.delete(transcript)
+    await db.commit()
+
+    # Vexa also caches the last-known segments in Redis; the caller (Aimable)
+    # doesn't stream after this, so leaving Redis state is fine for the batch
+    # path — the transcription-service pushes new rows straight to postgres.
+
+    logger.info(f"[API] User {current_user.id} wiped {deleted} transcript rows for meeting {meeting.id}")
+    return {"deleted": deleted, "meeting_id": meeting.id}

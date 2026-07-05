@@ -1086,6 +1086,15 @@ async def delete_meeting_proxy(platform: Platform, native_meeting_id: str, reque
     url = f"{TRANSCRIPTION_COLLECTOR_URL}/meetings/{platform.value}/{native_meeting_id}"
     return await forward_request(app.state.http_client, "DELETE", url, request)
 
+@app.delete("/meetings/{platform}/{native_meeting_id}/transcripts",
+            tags=["Transcriptions"],
+            summary="Delete transcript segments only (keep recording + meeting)",
+            description="Wipes only the transcript rows so a fresh POST /meetings/{id}/transcribe can produce a new Whisper batch. Meeting record and recording stay intact.",
+            dependencies=[Depends(api_key_scheme)])
+async def delete_transcripts_proxy(platform: Platform, native_meeting_id: str, request: Request):
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/meetings/{platform.value}/{native_meeting_id}/transcripts"
+    return await forward_request(app.state.http_client, "DELETE", url, request)
+
 # --- User Profile Routes ---
 @app.put("/user/webhook",
          tags=["User"],
