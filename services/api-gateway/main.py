@@ -846,7 +846,11 @@ async def transcribe_audio_proxy(request: Request):
     base = TRANSCRIPTION_SERVICE_URL.rstrip("/")
     url = base if base.endswith("/v1/audio/transcriptions") else f"{base}/v1/audio/transcriptions"
     extra = {"Authorization": f"Bearer {TRANSCRIPTION_SERVICE_TOKEN}"} if TRANSCRIPTION_SERVICE_TOKEN else None
-    return await forward_request(app.state.http_client, "POST", url, request, require_auth=True, extra_headers=extra)
+    # The default gateway http_client has a 30s timeout, too short for Whisper
+    # under load. Use a dedicated client with a 10-min read window, matching
+    # transcribe_meeting_proxy (and Aimable's client-side timeout).
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=30.0)) as long_client:
+        return await forward_request(long_client, "POST", url, request, require_auth=True, extra_headers=extra)
 
 
 # --- Public Transcript Share Links (no API integration needed by client) ---
