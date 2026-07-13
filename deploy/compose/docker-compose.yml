@@ -229,6 +229,8 @@ services:
       - ADMIN_API_URL=http://admin-api:8001
       - MEETING_API_URL=http://meeting-api:8080
       - TRANSCRIPTION_COLLECTOR_URL=http://meeting-api:8080
+      - TRANSCRIPTION_SERVICE_URL=${TRANSCRIPTION_SERVICE_URL:-}
+      - TRANSCRIPTION_SERVICE_TOKEN=${TRANSCRIPTION_SERVICE_TOKEN:-}
       - MCP_URL=http://mcp:18888
       - CALENDAR_SERVICE_URL=http://calendar-service:8050
       - AGENT_API_URL=http://agent-api:8100
