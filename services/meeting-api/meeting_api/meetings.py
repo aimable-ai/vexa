@@ -1141,6 +1141,7 @@ async def request_bot(
         "connectionId": connection_id,
         "language": req.language,
         "task": req.task,
+        "initialPrompt": req.initial_prompt,
         "transcriptionTier": req.transcription_tier or "realtime",
         "redisUrl": REDIS_URL,
         # Map API names → bot-side frozen names

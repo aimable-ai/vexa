@@ -31,6 +31,7 @@ export const BotConfigSchema = z.object({
   nativeMeetingId: z.string().optional(),
   language: z.string().nullish(),
   task: z.string().nullish(),
+  initialPrompt: z.string().nullish(), // Optional Whisper initial_prompt (feature 031)
   allowedLanguages: z.array(z.string()).optional(),
   transcribeEnabled: z.boolean().optional(),
   transcriptionTier: z.enum(["realtime", "deferred"]).optional(),

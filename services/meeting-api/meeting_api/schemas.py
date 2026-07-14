@@ -531,6 +531,10 @@ class MeetingCreate(BaseModel):
     bot_name: Optional[str] = Field(None, description="Optional name for the bot in the meeting")
     language: Optional[str] = Field(None, description="Optional language code for transcription (e.g., 'en', 'es'). Forces this single language.")
     task: Optional[str] = Field(None, description="Optional task for the transcription model (e.g., 'transcribe', 'translate')")
+    initial_prompt: Optional[str] = Field(
+        None,
+        description="Optional Whisper initial_prompt to bias transcription toward domain vocabulary (Aimable transcription dictionary, feature 031). Kept short (~200 tokens)."
+    )
     transcription_tier: Optional[str] = Field(
         "realtime",
         description="Transcription priority tier: 'realtime' (default) or 'deferred'"

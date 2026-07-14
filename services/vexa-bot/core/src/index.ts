@@ -1353,7 +1353,11 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
       const whisperStartMs = Date.now();
       try {
         const contextPrompt = speakerManager!.getLastConfirmedText(speakerId);
-        const result = await transcriptionClient.transcribe(audioBuffer, lang || undefined, contextPrompt || undefined);
+        // feature 031: bias Whisper toward the dictionary vocabulary by prepending
+        // the initial_prompt hint to the streaming-continuity context. Both share
+        // Whisper's single prompt slot, so the hint leads and recent text follows.
+        const biasedPrompt = [botConfig.initialPrompt, contextPrompt].filter(Boolean).join(' ') || undefined;
+        const result = await transcriptionClient.transcribe(audioBuffer, lang || undefined, biasedPrompt);
         telemetry.whisperCalls++;
         telemetry.totalWhisperMs += Date.now() - whisperStartMs;
         if (result && result.text) {
