@@ -8,6 +8,7 @@ export type BotConfig = {
   nativeMeetingId: string,
   language?: string | null,
   task?: string | null,
+  initialPrompt?: string | null,
   allowedLanguages?: string[],
   transcribeEnabled?: boolean,
   transcriptionTier?: "realtime" | "deferred",
