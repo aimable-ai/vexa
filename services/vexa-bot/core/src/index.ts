@@ -28,6 +28,7 @@ import { ensureBrowserDataDir, syncBrowserDataFromS3, syncBrowserDataToS3, clean
 import { TranscriptionClient } from './services/transcription-client';
 import { SegmentPublisher } from './services/segment-publisher';
 import { SpeakerStreamManager } from './services/speaker-streams';
+import { RealtimeSpeakerStreamManager } from './services/realtime-transcription';
 import { resolveSpeakerName, clearSpeakerNameCache, isTrackLocked, isNameTaken, reportTrackAudio, getLockedMapping } from './services/speaker-identity';
 import { SileroVAD } from './services/vad';
 import { isHallucination } from './services/hallucination-filter';
@@ -152,7 +153,7 @@ let redisPublisher: RedisClientType | null = null;
 let transcriptionClient: TranscriptionClient | null = null;
 let segmentPublisher: SegmentPublisher | null = null;
 export function getSegmentPublisher(): SegmentPublisher | null { return segmentPublisher; }
-let speakerManager: SpeakerStreamManager | null = null;
+let speakerManager: SpeakerStreamManager | RealtimeSpeakerStreamManager | null = null;
 let vadModel: SileroVAD | null = null;
 /** Per-speaker VAD states for streaming mode (GMeet only) */
 import type { VadSpeakerState } from './services/vad';
@@ -1264,14 +1265,20 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
 
   const meetingId = botConfig.meeting_id;
 
+  // A ws:// (or wss://) URL selects the Voxtral realtime pipeline instead of
+  // the Whisper HTTP + LocalAgreement loop (AIM-1377).
+  const useRealtime = /^wss?:\/\//.test(transcriptionServiceUrl);
+
   try {
-    transcriptionClient = new TranscriptionClient({
-      serviceUrl: transcriptionServiceUrl,
-      apiToken: botConfig.transcriptionServiceToken || process.env.TRANSCRIPTION_SERVICE_TOKEN,
-      maxSpeechDurationSec: process.env.MAX_SPEECH_DURATION_SEC ? parseFloat(process.env.MAX_SPEECH_DURATION_SEC) : undefined,
-      minSilenceDurationMs: process.env.MIN_SILENCE_DURATION_MS ? parseInt(process.env.MIN_SILENCE_DURATION_MS) : 100,
-    });
-    log('[PerSpeaker] TranscriptionClient created');
+    if (!useRealtime) {
+      transcriptionClient = new TranscriptionClient({
+        serviceUrl: transcriptionServiceUrl,
+        apiToken: botConfig.transcriptionServiceToken || process.env.TRANSCRIPTION_SERVICE_TOKEN,
+        maxSpeechDurationSec: process.env.MAX_SPEECH_DURATION_SEC ? parseFloat(process.env.MAX_SPEECH_DURATION_SEC) : undefined,
+        minSilenceDurationMs: process.env.MIN_SILENCE_DURATION_MS ? parseInt(process.env.MIN_SILENCE_DURATION_MS) : 100,
+      });
+      log('[PerSpeaker] TranscriptionClient created');
+    }
 
     segmentPublisher = new SegmentPublisher({
       redisUrl: botConfig.redisUrl || process.env.REDIS_URL || 'redis://localhost:6379',
@@ -1298,6 +1305,58 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
     if (process.env.RAW_CAPTURE === 'true') {
       rawCaptureService = new RawCaptureService(meetingId);
       log(`[PerSpeaker] Raw capture enabled → ${rawCaptureService.outputPath}`);
+    }
+
+    if (useRealtime) {
+      const rtm = new RealtimeSpeakerStreamManager({ realtimeUrl: transcriptionServiceUrl });
+      speakerManager = rtm;
+      confirmedBatches = new Map();
+
+      rtm.onSegmentConfirmed = (speakerId, speakerName, transcript, bufferStartMs, bufferEndMs, segmentId) => {
+        if (!segmentPublisher) return;
+        const explicitLang = currentLanguage && currentLanguage !== 'auto' ? currentLanguage : null;
+        const lang = explicitLang || 'en';
+        const startSec = (bufferStartMs - segmentPublisher.sessionStartMs) / 1000;
+        const endSec = (bufferEndMs - segmentPublisher.sessionStartMs) / 1000;
+        const fullSegmentId = `${segmentPublisher.sessionUid}:${segmentId}`;
+        log(`[📝 CONFIRMED] ${speakerName} | ${lang} | ${startSec.toFixed(1)}s-${endSec.toFixed(1)}s | ${fullSegmentId} | "${transcript}"`);
+        if (rawCaptureService) rawCaptureService.logSegmentConfirmed(speakerName, transcript);
+        if (!confirmedBatches.has(speakerId)) confirmedBatches.set(speakerId, []);
+        confirmedBatches.get(speakerId)!.push({
+          speaker: speakerName, text: transcript, start: startSec, end: endSec,
+          language: lang, completed: true, segment_id: fullSegmentId,
+          absolute_start_time: new Date(bufferStartMs).toISOString(),
+          absolute_end_time: new Date(bufferEndMs).toISOString(),
+        });
+        // Publish right away — a gap-finalized segment must not wait for the
+        // speaker's next delta to be drained.
+        const batch = confirmedBatches.get(speakerId) || [];
+        confirmedBatches.set(speakerId, []);
+        void segmentPublisher.publishTranscript(speakerName, batch, []).catch((err: any) =>
+          log(`[Realtime] publish failed: ${err?.message}`)
+        );
+      };
+
+      rtm.onPending = async (speakerId, speakerName, text, segmentStartMs) => {
+        if (!segmentPublisher) return;
+        const explicitLang = currentLanguage && currentLanguage !== 'auto' ? currentLanguage : null;
+        const lang = explicitLang || 'en';
+        const nowMs = Date.now();
+        const startSec = (segmentStartMs - segmentPublisher.sessionStartMs) / 1000;
+        const endSec = (nowMs - segmentPublisher.sessionStartMs) / 1000;
+        const pending = [{
+          speaker: speakerName, text, start: startSec, end: endSec,
+          language: lang, completed: false,
+          absolute_start_time: new Date(segmentStartMs).toISOString(),
+          absolute_end_time: new Date(nowMs).toISOString(),
+        }];
+        const speakerConfirmed = confirmedBatches.get(speakerId) || [];
+        confirmedBatches.set(speakerId, []);
+        await segmentPublisher.publishTranscript(speakerName, speakerConfirmed, pending);
+      };
+
+      log('[PerSpeaker] RealtimeSpeakerStreamManager created and wired (Voxtral realtime)');
+      return true;
     }
 
     const isGoogleMeet = botConfig.platform === 'google_meet';
