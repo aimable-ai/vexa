@@ -18,6 +18,9 @@ const PRIMER_TEXTS: Record<string, string> = {
 };
 /** Give up discarding primer transcript this long after sending it. */
 const PRIMER_TIMEOUT_MS = 6000;
+/** 800ms of 16 kHz pcm16 zeros — pushed once when a speaker goes quiet so the
+ * delay-conditioned model emits its withheld final words (tail flush). */
+const TAIL_SILENCE = Buffer.alloc(Math.floor(0.8 * 16000) * 2);
 
 /**
  * Realtime per-speaker transcription via a vLLM /v1/realtime WebSocket
@@ -71,6 +74,8 @@ interface SpeakerSession {
   primerSentMs: number;
   /** Audio appended since the last input_audio_buffer.commit. */
   audioSinceCommit: boolean;
+  /** Synthetic-silence tail flush already sent for the current pause. */
+  tailFlushed: boolean;
   lastCommitMs: number;
 }
 
@@ -120,7 +125,7 @@ export class RealtimeSpeakerStreamManager {
       segmentText: '', segmentStartMs: now, lastDeltaMs: 0, lastAudioMs: now,
       sequenceNumber: 0, generation: 0, closed: false,
       primerPending: false, primerText: '', primerSentMs: 0,
-      audioSinceCommit: false, lastCommitMs: 0,
+      audioSinceCommit: false, lastCommitMs: 0, tailFlushed: true,
     });
     log(`[Realtime] Added speaker "${speakerName}" (${speakerId})`);
   }
@@ -151,6 +156,7 @@ export class RealtimeSpeakerStreamManager {
       s.segmentStartMs = now;
     }
     s.lastAudioMs = now;
+    s.tailFlushed = false;
     const pcm = this.float32ToPcm16(audioData);
     if (s.ws && s.wsReady) {
       this.sendAudio(s, pcm);
@@ -331,6 +337,17 @@ export class RealtimeSpeakerStreamManager {
       // Commit cadence — the model only transcribes committed audio.
       if (s.audioSinceCommit && now - s.lastCommitMs >= 1500) {
         this.sendCommit(s);
+      }
+      // Tail flush — the model's delay conditioning withholds the last
+      // ~0.5s of words until it sees audio AFTER them. The VAD sends
+      // nothing during a pause, so on speech end push a short synthetic
+      // silence + commit once, or the final words of an utterance only
+      // appear when the speaker starts their NEXT utterance.
+      if (!s.tailFlushed && s.ws && s.wsReady &&
+          now - s.lastAudioMs > 700 && now - s.lastAudioMs < this.cfg.idleTimeoutSec * 1000) {
+        this.sendAudio(s, TAIL_SILENCE);
+        this.sendCommit(s);
+        s.tailFlushed = true;
       }
       // Silence gap → the open segment is done. Gate on AUDIO silence (VAD
       // only feeds real speech), not just delta silence: deltas arrive in
