@@ -1,5 +1,16 @@
 import { log } from '../utils';
 import { isHallucination } from './hallucination-filter';
+import { PRIMER_PCM16_NL_BASE64, PRIMER_PCM16_EN_BASE64 } from './primer-audio';
+
+/** Spoken language primers, played as the first audio of every WS session so
+ * the model locks onto the meeting language (it has no language parameter —
+ * it locks on whatever it hears first). Keyed by 2-letter language code. */
+const PRIMERS: Record<string, Buffer> = {
+  nl: Buffer.from(PRIMER_PCM16_NL_BASE64, 'base64'),
+  en: Buffer.from(PRIMER_PCM16_EN_BASE64, 'base64'),
+};
+/** Give up discarding primer transcript this long after sending it. */
+const PRIMER_TIMEOUT_MS = 6000;
 
 /**
  * Realtime per-speaker transcription via a vLLM /v1/realtime WebSocket
@@ -26,6 +37,9 @@ export interface RealtimeTranscriptionConfig {
   maxSegmentChars?: number;
   /** Close an idle speaker session after this many seconds without audio. Default 20. */
   idleTimeoutSec?: number;
+  /** Meeting language (2-letter code). Selects the spoken primer that locks the
+   * model's language on every session open; no primer when unset/unknown. */
+  language?: string;
 }
 
 interface SpeakerSession {
@@ -44,6 +58,10 @@ interface SpeakerSession {
   sequenceNumber: number;
   generation: number;
   closed: boolean;
+  /** Primer transcript not yet fully received/discarded on this connection. */
+  primerPending: boolean;
+  primerText: string;
+  primerSentMs: number;
 }
 
 const SENTENCE_END = /[.!?…]["')\]]?\s*$/;
@@ -61,6 +79,8 @@ export class RealtimeSpeakerStreamManager {
   /** Draft (still-growing) segment text, for pending publication. */
   onPending: ((speakerId: string, speakerName: string, text: string, segmentStartMs: number) => void) | null = null;
 
+  private primer: Buffer | null;
+
   constructor(config: RealtimeTranscriptionConfig) {
     this.cfg = {
       realtimeUrl: config.realtimeUrl.replace(/\/+$/, ''),
@@ -69,7 +89,13 @@ export class RealtimeSpeakerStreamManager {
       segmentGapMs: config.segmentGapMs ?? 1200,
       maxSegmentChars: config.maxSegmentChars ?? 600,
       idleTimeoutSec: config.idleTimeoutSec ?? 20,
+      language: config.language ?? '',
     };
+    const langKey = this.cfg.language.toLowerCase().slice(0, 2);
+    this.primer = PRIMERS[langKey] ?? null;
+    if (this.cfg.language && !this.primer) {
+      log(`[Realtime] No language primer for "${this.cfg.language}" — sessions rely on auto-detection`);
+    }
     this.sweepTimer = setInterval(() => this.sweep(), 500);
   }
 
@@ -81,6 +107,7 @@ export class RealtimeSpeakerStreamManager {
       ws: null, wsReady: false, pendingAudio: [],
       segmentText: '', segmentStartMs: now, lastDeltaMs: 0, lastAudioMs: now,
       sequenceNumber: 0, generation: 0, closed: false,
+      primerPending: false, primerText: '', primerSentMs: 0,
     });
     log(`[Realtime] Added speaker "${speakerName}" (${speakerId})`);
   }
@@ -159,6 +186,14 @@ export class RealtimeSpeakerStreamManager {
       if (msg.type === 'session.created') {
         try { ws.send(JSON.stringify({ type: 'session.update', model: this.cfg.model })); } catch {}
         s.wsReady = true;
+        // Language primer FIRST — the model locks onto the language of the
+        // first audio it hears. Its transcript is discarded in handleDelta.
+        if (this.primer) {
+          s.primerPending = true;
+          s.primerText = '';
+          s.primerSentMs = Date.now();
+          this.sendAudio(s, this.primer);
+        }
         for (const pcm of s.pendingAudio.splice(0)) this.sendAudio(s, pcm);
       } else if (msg.type === 'transcription.delta' && typeof msg.delta === 'string') {
         this.handleDelta(s, msg.delta);
@@ -202,6 +237,25 @@ export class RealtimeSpeakerStreamManager {
 
   private handleDelta(s: SpeakerSession, delta: string): void {
     if (!delta) return;
+    if (s.primerPending) {
+      if (Date.now() - s.primerSentMs > PRIMER_TIMEOUT_MS) {
+        // Primer transcript never fully arrived — stop discarding and treat
+        // this delta as real text.
+        s.primerPending = false;
+        s.primerText = '';
+        s.segmentStartMs = Date.now();
+      } else {
+        // Discard the primer's own transcript. The primer sentence ends with
+        // a period, so a sentence boundary marks it fully received.
+        s.primerText += delta;
+        if (SENTENCE_END.test(s.primerText)) {
+          s.primerPending = false;
+          s.primerText = '';
+          s.segmentStartMs = Date.now();
+        }
+        return;
+      }
+    }
     if (!s.segmentText) s.segmentStartMs = Math.min(s.segmentStartMs, Date.now());
     s.segmentText += delta;
     s.lastDeltaMs = Date.now();

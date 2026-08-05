@@ -1308,7 +1308,12 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
     }
 
     if (useRealtime) {
-      const rtm = new RealtimeSpeakerStreamManager({ realtimeUrl: transcriptionServiceUrl });
+      const rtm = new RealtimeSpeakerStreamManager({
+        realtimeUrl: transcriptionServiceUrl,
+        // Meeting language drives the spoken primer that locks the model's
+        // language per session (there is no API parameter for it).
+        language: currentLanguage && currentLanguage !== 'auto' ? currentLanguage : '',
+      });
       speakerManager = rtm;
       confirmedBatches = new Map();
 
