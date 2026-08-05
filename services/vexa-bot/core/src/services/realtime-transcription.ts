@@ -116,7 +116,7 @@ export class RealtimeSpeakerStreamManager {
     this.httpLive = /^https?:\/\//i.test(this.cfg.realtimeUrl);
     const langKey = this.cfg.language.toLowerCase().slice(0, 2);
     this.primer = PRIMERS[langKey] ?? null;
-    this.primerMinChars = Math.floor((PRIMER_TEXTS[langKey]?.length ?? 0) * 0.6);
+    this.primerMinChars = Math.floor((PRIMER_TEXTS[langKey]?.length ?? 0) * 0.85);
     if (this.cfg.language && !this.primer) {
       log(`[Realtime] No language primer for "${this.cfg.language}" — sessions rely on auto-detection`);
     }
