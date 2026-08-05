@@ -9,6 +9,13 @@ const PRIMERS: Record<string, Buffer> = {
   nl: Buffer.from(PRIMER_PCM16_NL_BASE64, 'base64'),
   en: Buffer.from(PRIMER_PCM16_EN_BASE64, 'base64'),
 };
+/** What the model is expected to transcribe for each primer — the discard
+ * runs until a sentence end AND ~this much text has been seen, so a period
+ * emitted early (e.g. "…an English." + " meeting.") can't end it prematurely. */
+const PRIMER_TEXTS: Record<string, string> = {
+  nl: 'Dit is een Nederlandse vergadering.',
+  en: 'This is an English meeting.',
+};
 /** Give up discarding primer transcript this long after sending it. */
 const PRIMER_TIMEOUT_MS = 6000;
 
@@ -83,6 +90,7 @@ export class RealtimeSpeakerStreamManager {
   onPending: ((speakerId: string, speakerName: string, text: string, segmentStartMs: number) => void) | null = null;
 
   private primer: Buffer | null;
+  private primerMinChars = 0;
 
   constructor(config: RealtimeTranscriptionConfig) {
     this.cfg = {
@@ -96,6 +104,7 @@ export class RealtimeSpeakerStreamManager {
     };
     const langKey = this.cfg.language.toLowerCase().slice(0, 2);
     this.primer = PRIMERS[langKey] ?? null;
+    this.primerMinChars = Math.floor((PRIMER_TEXTS[langKey]?.length ?? 0) * 0.6);
     if (this.cfg.language && !this.primer) {
       log(`[Realtime] No language primer for "${this.cfg.language}" — sessions rely on auto-detection`);
     }
@@ -269,7 +278,7 @@ export class RealtimeSpeakerStreamManager {
         // Discard the primer's own transcript. The primer sentence ends with
         // a period, so a sentence boundary marks it fully received.
         s.primerText += delta;
-        if (SENTENCE_END.test(s.primerText)) {
+        if (SENTENCE_END.test(s.primerText) && s.primerText.trim().length >= this.primerMinChars) {
           s.primerPending = false;
           s.primerText = '';
           s.segmentStartMs = Date.now();
