@@ -96,6 +96,10 @@ export class RealtimeSpeakerStreamManager {
 
   private primer: Buffer | null;
   private primerMinChars = 0;
+  /** http(s):// realtimeUrl selects the audio.cpp HTTP-live transport (chunked
+   * raw-PCM request body up, SSE/line deltas down) instead of the OpenAI-style
+   * realtime WebSocket. Everything above the transport is shared. */
+  private httpLive: boolean;
 
   constructor(config: RealtimeTranscriptionConfig) {
     this.cfg = {
@@ -107,6 +111,7 @@ export class RealtimeSpeakerStreamManager {
       idleTimeoutSec: config.idleTimeoutSec ?? 20,
       language: config.language ?? '',
     };
+    this.httpLive = /^https?:\/\//i.test(this.cfg.realtimeUrl);
     const langKey = this.cfg.language.toLowerCase().slice(0, 2);
     this.primer = PRIMERS[langKey] ?? null;
     this.primerMinChars = Math.floor((PRIMER_TEXTS[langKey]?.length ?? 0) * 0.6);
@@ -188,6 +193,7 @@ export class RealtimeSpeakerStreamManager {
   // ── internals ──────────────────────────────────────────────────────────
 
   private connect(s: SpeakerSession): void {
+    if (this.httpLive) { this.connectHttpLive(s); return; }
     const generation = s.generation;
     let WS: any = (globalThis as any).WebSocket;
     if (!WS) {
@@ -244,12 +250,92 @@ export class RealtimeSpeakerStreamManager {
     }
   }
 
+  /** audio.cpp HTTP-live: one long-lived chunked POST per speaker session —
+   * raw s16le PCM written to the request body as it is captured, transcript
+   * deltas read back from the streamed response (SSE `data:` lines or
+   * `partial_text=` lines). No commit protocol: the server decodes as audio
+   * arrives, so sendCommit becomes a no-op on this transport. */
+  private connectHttpLive(s: SpeakerSession): void {
+    const generation = s.generation;
+    let url: URL;
+    try { url = new URL(this.cfg.realtimeUrl); } catch { log(`[Realtime] Bad HTTP-live URL: ${this.cfg.realtimeUrl}`); return; }
+    const mod = url.protocol === 'https:' ? require('https') : require('http');
+    log(`[Realtime] Opening HTTP-live session for "${s.speakerName}" → ${this.cfg.realtimeUrl}`);
+    const req = mod.request(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'Accept': 'text/event-stream' },
+    });
+    s.ws = req;
+    s.wsReady = false;
+
+    const fail = (why: string) => {
+      if (this.sessions.get(s.speakerId) !== s || s.generation !== generation) return;
+      log(`[Realtime] HTTP-live ended ("${s.speakerName}"): ${why}`);
+      s.ws = null;
+      s.wsReady = false; // lazy reconnect on next feedAudio
+    };
+
+    req.on('response', (res: any) => {
+      if (this.sessions.get(s.speakerId) !== s || s.generation !== generation) return;
+      if (res.statusCode !== 200) { fail(`HTTP ${res.statusCode}`); try { req.destroy(); } catch {} return; }
+      let buf = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => {
+        if (this.sessions.get(s.speakerId) !== s || s.generation !== generation) return;
+        buf += chunk;
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          const delta = this.parseLiveDelta(line);
+          if (delta) this.handleDelta(s, delta);
+        }
+      });
+      res.on('end', () => fail('response ended'));
+      res.on('error', (err: any) => fail(err?.message || 'response error'));
+    });
+    req.on('error', (err: any) => fail(err?.message || 'request error'));
+
+    // The request body is writable immediately — mark ready, prime, flush.
+    s.wsReady = true;
+    if (this.primer) {
+      s.primerPending = true;
+      s.primerText = '';
+      s.primerSentMs = Date.now();
+      this.sendAudio(s, this.primer);
+    }
+    for (const pcm of s.pendingAudio.splice(0)) this.sendAudio(s, pcm);
+  }
+
+  /** One line of the HTTP-live response → delta text, or null for noise.
+   * Tolerates SSE (`data: {...}` / `data: text`), bare JSON and
+   * `partial_text=` CLI-style lines. */
+  private parseLiveDelta(line: string): string | null {
+    if (!line || line.startsWith(':')) return null;
+    let payload = line;
+    if (payload.startsWith('data:')) payload = payload.slice(5).trim();
+    if (payload.startsWith('partial_text=')) return payload.slice('partial_text='.length);
+    if (payload.startsWith('{')) {
+      try {
+        const obj = JSON.parse(payload);
+        const t = obj.delta ?? obj.partial_text ?? obj.text;
+        return typeof t === 'string' && t ? t : null;
+      } catch { return null; }
+    }
+    // Non-JSON, non-labelled lines (status noise like audio_input=stdin) are dropped.
+    return payload.includes('=') ? null : payload || null;
+  }
+
   private sendAudio(s: SpeakerSession, pcm: Buffer): void {
     try {
-      // ~4KB raw audio per append message.
-      for (let off = 0; off < pcm.length; off += 4096) {
-        const chunk = pcm.subarray(off, Math.min(off + 4096, pcm.length));
-        s.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: chunk.toString('base64') }));
+      if (this.httpLive) {
+        s.ws.write(pcm);
+      } else {
+        // ~4KB raw audio per append message.
+        for (let off = 0; off < pcm.length; off += 4096) {
+          const chunk = pcm.subarray(off, Math.min(off + 4096, pcm.length));
+          s.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: chunk.toString('base64') }));
+        }
       }
       s.audioSinceCommit = true;
     } catch (err: any) {
@@ -263,6 +349,13 @@ export class RealtimeSpeakerStreamManager {
    * cadence is safe.) */
   private sendCommit(s: SpeakerSession): void {
     if (!s.ws || !s.wsReady) return;
+    if (this.httpLive) {
+      // audio.cpp decodes continuously — there is no commit. Keep the
+      // bookkeeping so the sweep's cadence logic stays quiet.
+      s.audioSinceCommit = false;
+      s.lastCommitMs = Date.now();
+      return;
+    }
     try {
       s.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
       s.audioSinceCommit = false;
@@ -324,8 +417,12 @@ export class RealtimeSpeakerStreamManager {
     s.closed = true;
     s.generation++;
     if (s.ws) {
-      try { s.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit', final: true })); } catch {}
-      try { s.ws.close(); } catch {}
+      if (this.httpLive) {
+        try { s.ws.end(); } catch {}
+      } else {
+        try { s.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit', final: true })); } catch {}
+        try { s.ws.close(); } catch {}
+      }
     }
     s.ws = null;
     s.wsReady = false;

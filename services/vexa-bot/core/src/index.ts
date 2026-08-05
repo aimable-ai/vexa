@@ -1267,7 +1267,12 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
 
   // A ws:// (or wss://) URL selects the Voxtral realtime pipeline instead of
   // the Whisper HTTP + LocalAgreement loop (AIM-1377).
-  const useRealtime = /^wss?:\/\//.test(transcriptionServiceUrl);
+  // ws(s):// → OpenAI-style realtime WS (vLLM); an http(s) URL on the
+  // audio.cpp live endpoint (/transcriptions/live) → HTTP-live transport.
+  // Any other http(s) URL stays on the legacy Whisper HTTP + LocalAgreement path.
+  const useRealtime =
+    /^wss?:\/\//.test(transcriptionServiceUrl) ||
+    /\/transcriptions\/live/.test(transcriptionServiceUrl);
 
   try {
     if (!useRealtime) {
