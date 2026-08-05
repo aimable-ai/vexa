@@ -20,7 +20,9 @@ const PRIMER_TEXTS: Record<string, string> = {
 const PRIMER_TIMEOUT_MS = 6000;
 /** 800ms of 16 kHz pcm16 zeros — pushed once when a speaker goes quiet so the
  * delay-conditioned model emits its withheld final words (tail flush). */
-const TAIL_SILENCE = Buffer.alloc(Math.floor(0.8 * 16000) * 2);
+// Sized for the 960ms delay conditioning (12 delay tokens): the model releases
+// an utterance's final words only after ~delay worth of subsequent audio.
+const TAIL_SILENCE = Buffer.alloc(Math.floor(1.2 * 16000) * 2);
 
 /**
  * Realtime per-speaker transcription via a vLLM /v1/realtime WebSocket
