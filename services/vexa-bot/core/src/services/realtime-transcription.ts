@@ -212,8 +212,9 @@ export class RealtimeSpeakerStreamManager {
       } else if (msg.type === 'transcription.delta' && typeof msg.delta === 'string') {
         this.handleDelta(s, msg.delta);
       } else if (msg.type === 'transcription.done') {
-        // Final commit of the session — anything not yet finalized goes out now.
-        this.finalizeSegment(s, 'done');
+        // Emitted after every commit's generation — NOT a segment boundary.
+        // Segments finalize on sentence boundary, audio-silence gap or size
+        // cap; session teardown flushes via removeSpeaker/idle close.
       } else if (msg.type === 'error') {
         log(`[Realtime] Server error for "${s.speakerName}": ${JSON.stringify(msg.error ?? msg)}`);
       }
@@ -331,8 +332,13 @@ export class RealtimeSpeakerStreamManager {
       if (s.audioSinceCommit && now - s.lastCommitMs >= 1500) {
         this.sendCommit(s);
       }
-      // Silence gap → the open segment is done.
-      if (s.segmentText && s.lastDeltaMs && now - s.lastDeltaMs > this.cfg.segmentGapMs) {
+      // Silence gap → the open segment is done. Gate on AUDIO silence (VAD
+      // only feeds real speech), not just delta silence: deltas arrive in
+      // bursts per commit, so a delta-only gap fires between every commit
+      // and chops sentences mid-flow.
+      if (s.segmentText && s.lastDeltaMs &&
+          now - s.lastDeltaMs > this.cfg.segmentGapMs &&
+          now - s.lastAudioMs > this.cfg.segmentGapMs) {
         this.finalizeSegment(s, 'gap');
       }
       // Long idle → close the socket (reopens on next audio).
