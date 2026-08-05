@@ -62,6 +62,9 @@ interface SpeakerSession {
   primerPending: boolean;
   primerText: string;
   primerSentMs: number;
+  /** Audio appended since the last input_audio_buffer.commit. */
+  audioSinceCommit: boolean;
+  lastCommitMs: number;
 }
 
 const SENTENCE_END = /[.!?…]["')\]]?\s*$/;
@@ -108,6 +111,7 @@ export class RealtimeSpeakerStreamManager {
       segmentText: '', segmentStartMs: now, lastDeltaMs: 0, lastAudioMs: now,
       sequenceNumber: 0, generation: 0, closed: false,
       primerPending: false, primerText: '', primerSentMs: 0,
+      audioSinceCommit: false, lastCommitMs: 0,
     });
     log(`[Realtime] Added speaker "${speakerName}" (${speakerId})`);
   }
@@ -193,6 +197,7 @@ export class RealtimeSpeakerStreamManager {
           s.primerText = '';
           s.primerSentMs = Date.now();
           this.sendAudio(s, this.primer);
+          this.sendCommit(s); // flush the primer promptly → language locks first
         }
         for (const pcm of s.pendingAudio.splice(0)) this.sendAudio(s, pcm);
       } else if (msg.type === 'transcription.delta' && typeof msg.delta === 'string') {
@@ -230,8 +235,24 @@ export class RealtimeSpeakerStreamManager {
         const chunk = pcm.subarray(off, Math.min(off + 4096, pcm.length));
         s.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: chunk.toString('base64') }));
       }
+      s.audioSinceCommit = true;
     } catch (err: any) {
       log(`[Realtime] send failed ("${s.speakerName}"): ${err?.message}`);
+    }
+  }
+
+  /** vLLM's realtime endpoint only generates text on commit — without a
+   * commit cadence the model buffers audio forever and emits nothing.
+   * (Commits during active generation are ignored server-side, so a fixed
+   * cadence is safe.) */
+  private sendCommit(s: SpeakerSession): void {
+    if (!s.ws || !s.wsReady) return;
+    try {
+      s.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+      s.audioSinceCommit = false;
+      s.lastCommitMs = Date.now();
+    } catch (err: any) {
+      log(`[Realtime] commit failed ("${s.speakerName}"): ${err?.message}`);
     }
   }
 
@@ -297,6 +318,10 @@ export class RealtimeSpeakerStreamManager {
   private sweep(): void {
     const now = Date.now();
     for (const s of this.sessions.values()) {
+      // Commit cadence — the model only transcribes committed audio.
+      if (s.audioSinceCommit && now - s.lastCommitMs >= 1500) {
+        this.sendCommit(s);
+      }
       // Silence gap → the open segment is done.
       if (s.segmentText && s.lastDeltaMs && now - s.lastDeltaMs > this.cfg.segmentGapMs) {
         this.finalizeSegment(s, 'gap');
