@@ -18,6 +18,10 @@ const PRIMER_TEXTS: Record<string, string> = {
 };
 /** Give up discarding primer transcript this long after sending it. */
 const PRIMER_TIMEOUT_MS = 6000;
+
+function normalizeForPrimerMatch(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
 /** 800ms of 16 kHz pcm16 zeros — pushed once when a speaker goes quiet so the
  * delay-conditioned model emits its withheld final words (tail flush). */
 // Sized for the 960ms delay conditioning (12 delay tokens): the model releases
@@ -98,6 +102,10 @@ export class RealtimeSpeakerStreamManager {
 
   private primer: Buffer | null;
   private primerMinChars = 0;
+  /** Normalized primer sentence — segments matching a suffix of it are primer
+   * residue (delay conditioning can release the primer's withheld tail after
+   * the discard window closed) and must never reach the transcript. */
+  private primerNorm = '';
   /** http(s):// realtimeUrl selects the audio.cpp HTTP-live transport (chunked
    * raw-PCM request body up, SSE/line deltas down) instead of the OpenAI-style
    * realtime WebSocket. Everything above the transport is shared. */
@@ -117,6 +125,7 @@ export class RealtimeSpeakerStreamManager {
     const langKey = this.cfg.language.toLowerCase().slice(0, 2);
     this.primer = PRIMERS[langKey] ?? null;
     this.primerMinChars = Math.floor((PRIMER_TEXTS[langKey]?.length ?? 0) * 0.85);
+    this.primerNorm = normalizeForPrimerMatch(PRIMER_TEXTS[langKey] ?? '');
     if (this.cfg.language && !this.primer) {
       log(`[Realtime] No language primer for "${this.cfg.language}" — sessions rely on auto-detection`);
     }
@@ -411,6 +420,10 @@ export class RealtimeSpeakerStreamManager {
     const endMs = Date.now();
     s.segmentStartMs = endMs;
     if (!text) return;
+    if (this.primerNorm && this.primerNorm.endsWith(normalizeForPrimerMatch(text))) {
+      log(`[Realtime] [FILTERED] Primer residue for "${s.speakerName}": "${text}"`);
+      return;
+    }
     if (isHallucination(text)) {
       log(`[Realtime] [FILTERED] Hallucination for "${s.speakerName}": "${text.substring(0, 60)}"`);
       return;
