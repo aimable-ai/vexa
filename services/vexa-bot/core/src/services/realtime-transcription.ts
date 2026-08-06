@@ -43,7 +43,7 @@ export interface RealtimeTranscriptionConfig {
   model?: string;
   /** Sample rate of input audio. Default 16000. */
   sampleRate?: number;
-  /** Finalize the open segment after this many ms without new deltas. Default 1200. */
+  /** Finalize the open segment after this many ms without new deltas. Default 800. */
   segmentGapMs?: number;
   /** Force-finalize a segment at this many characters. Default 600. */
   maxSegmentChars?: number;
@@ -108,7 +108,7 @@ export class RealtimeSpeakerStreamManager {
       realtimeUrl: config.realtimeUrl.replace(/\/+$/, ''),
       model: config.model || 'mistralai/Voxtral-Mini-4B-Realtime-2602',
       sampleRate: config.sampleRate ?? 16000,
-      segmentGapMs: config.segmentGapMs ?? 1200,
+      segmentGapMs: config.segmentGapMs ?? 800,
       maxSegmentChars: config.maxSegmentChars ?? 600,
       idleTimeoutSec: config.idleTimeoutSec ?? 20,
       language: config.language ?? '',
@@ -393,8 +393,13 @@ export class RealtimeSpeakerStreamManager {
     s.lastDeltaMs = Date.now();
     const text = s.segmentText.trim();
     if (text && this.onPending) this.onPending(s.speakerId, s.speakerName, text, s.segmentStartMs);
+    // A sentence end finalizes long segments mid-speech (>40 chars guards
+    // against abbreviation periods), and ANY segment once the audio has gone
+    // quiet — short utterances ("Nee, dat is niet waar.") must not wait out
+    // the gap timer after the tail flush already released their last words.
     if (s.segmentText.length >= this.cfg.maxSegmentChars ||
-        (SENTENCE_END.test(s.segmentText) && s.segmentText.trim().length > 40)) {
+        (SENTENCE_END.test(s.segmentText) &&
+         (s.segmentText.trim().length > 40 || Date.now() - s.lastAudioMs > 700))) {
       this.finalizeSegment(s, 'boundary');
     }
   }
@@ -434,7 +439,7 @@ export class RealtimeSpeakerStreamManager {
     const now = Date.now();
     for (const s of this.sessions.values()) {
       // Commit cadence — the model only transcribes committed audio.
-      if (s.audioSinceCommit && now - s.lastCommitMs >= 1500) {
+      if (s.audioSinceCommit && now - s.lastCommitMs >= 750) {
         this.sendCommit(s);
       }
       // Tail flush — the model's delay conditioning withholds the last
