@@ -29,6 +29,9 @@ export class BrowserAudioService {
   private processor: any = null;
   private audioContext: AudioContext | null = null;
   private destinationNode: MediaStreamAudioDestinationNode | null = null;
+  /** MediaStream ids already mixed into the destination (AIM-1377). */
+  private connectedStreamIds: Set<string> = new Set();
+  private streamWatchTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: any) {
     this.config = config;
@@ -174,6 +177,7 @@ export class BrowserAudioService {
           // Connect regardless of the read-only muted flag; WebAudio can still pull samples
           const sourceNode = this.audioContext!.createMediaStreamSource(elementStream);
           sourceNode.connect(this.destinationNode!);
+          this.connectedStreamIds.add(elementStream.id);
           sourcesConnected++;
           (window as any).logBot(`Connected audio stream from element ${index + 1}/${mediaElements.length}. Tracks=${elementStream.getAudioTracks().length}`);
         } else {
@@ -189,7 +193,40 @@ export class BrowserAudioService {
     }
 
     (window as any).logBot(`Successfully combined ${sourcesConnected} audio streams.`);
+    this.startStreamWatcher();
     return this.destinationNode!.stream;
+  }
+
+  /** Meet reassigns WebRTC audio tracks to new/other <audio> elements during a
+   * meeting; a one-time element scan goes deaf when that happens ("Stream 0
+   * silent for Ns" bursts). Rescan every 2s and mix in any MediaStream we have
+   * not connected yet — connecting an already-silent stream is harmless. */
+  private startStreamWatcher(): void {
+    if (this.streamWatchTimer) return;
+    this.streamWatchTimer = setInterval(() => {
+      try {
+        if (!this.audioContext || !this.destinationNode) return;
+        const elements = Array.from(document.querySelectorAll("audio, video")) as any[];
+        for (const el of elements) {
+          const stream = el.srcObject;
+          if (!(stream instanceof MediaStream)) continue;
+          if (stream.getAudioTracks().length === 0) continue;
+          if (this.connectedStreamIds.has(stream.id)) continue;
+          try {
+            if (typeof el.muted === "boolean") el.muted = false;
+            if (typeof el.play === "function") el.play().catch(() => {});
+            const source = this.audioContext.createMediaStreamSource(stream);
+            source.connect(this.destinationNode);
+            this.connectedStreamIds.add(stream.id);
+            (window as any).logBot(`[Audio] Watcher connected NEW stream ${stream.id} (tracks=${stream.getAudioTracks().length})`);
+          } catch (err: any) {
+            (window as any).logBot(`[Audio] Watcher could not connect stream: ${err?.message}`);
+          }
+        }
+      } catch {
+        // never let the watcher take down the page context
+      }
+    }, 2000);
   }
 
   async initializeAudioProcessor(combinedStream: MediaStream): Promise<any> {
