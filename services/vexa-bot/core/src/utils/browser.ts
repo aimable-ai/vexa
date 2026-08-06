@@ -29,8 +29,11 @@ export class BrowserAudioService {
   private processor: any = null;
   private audioContext: AudioContext | null = null;
   private destinationNode: MediaStreamAudioDestinationNode | null = null;
-  /** MediaStream ids already mixed into the destination (AIM-1377). */
-  private connectedStreamIds: Set<string> = new Set();
+  /** MediaStreamTrack ids already mixed into the destination (AIM-1377).
+   * Track-level, not stream-level: Meet swaps tracks INSIDE an existing
+   * MediaStream, and a MediaStreamAudioSourceNode stays bound to the track it
+   * was created with — the swap silently orphans it. */
+  private connectedTrackIds: Set<string> = new Set();
   private streamWatchTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: any) {
@@ -177,7 +180,7 @@ export class BrowserAudioService {
           // Connect regardless of the read-only muted flag; WebAudio can still pull samples
           const sourceNode = this.audioContext!.createMediaStreamSource(elementStream);
           sourceNode.connect(this.destinationNode!);
-          this.connectedStreamIds.add(elementStream.id);
+          for (const t of elementStream.getAudioTracks()) this.connectedTrackIds.add(t.id);
           sourcesConnected++;
           (window as any).logBot(`Connected audio stream from element ${index + 1}/${mediaElements.length}. Tracks=${elementStream.getAudioTracks().length}`);
         } else {
@@ -210,17 +213,21 @@ export class BrowserAudioService {
         for (const el of elements) {
           const stream = el.srcObject;
           if (!(stream instanceof MediaStream)) continue;
-          if (stream.getAudioTracks().length === 0) continue;
-          if (this.connectedStreamIds.has(stream.id)) continue;
-          try {
-            if (typeof el.muted === "boolean") el.muted = false;
-            if (typeof el.play === "function") el.play().catch(() => {});
-            const source = this.audioContext.createMediaStreamSource(stream);
-            source.connect(this.destinationNode);
-            this.connectedStreamIds.add(stream.id);
-            (window as any).logBot(`[Audio] Watcher connected NEW stream ${stream.id} (tracks=${stream.getAudioTracks().length})`);
-          } catch (err: any) {
-            (window as any).logBot(`[Audio] Watcher could not connect stream: ${err?.message}`);
+          for (const track of stream.getAudioTracks()) {
+            if (this.connectedTrackIds.has(track.id)) continue;
+            try {
+              if (typeof el.muted === "boolean") el.muted = false;
+              if (typeof el.play === "function") el.play().catch(() => {});
+              track.enabled = true;
+              // Bind the NEW track via its own single-track stream — source
+              // nodes never follow track swaps inside an existing stream.
+              const source = this.audioContext.createMediaStreamSource(new MediaStream([track]));
+              source.connect(this.destinationNode);
+              this.connectedTrackIds.add(track.id);
+              (window as any).logBot(`[Audio] Watcher connected NEW track ${track.id} (stream=${stream.id})`);
+            } catch (err: any) {
+              (window as any).logBot(`[Audio] Watcher could not connect track: ${err?.message}`);
+            }
           }
         }
       } catch {
