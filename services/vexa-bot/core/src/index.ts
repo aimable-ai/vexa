@@ -1356,7 +1356,7 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
         const endSec = (nowMs - segmentPublisher.sessionStartMs) / 1000;
         const pending = [{
           speaker: speakerName, text, start: startSec, end: endSec,
-          language: lang, completed: false,
+          language: lang, completed: false, stable: true,
           absolute_start_time: new Date(segmentStartMs).toISOString(),
           absolute_end_time: new Date(nowMs).toISOString(),
         }];

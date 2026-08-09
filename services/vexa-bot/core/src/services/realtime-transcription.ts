@@ -401,7 +401,11 @@ export class RealtimeSpeakerStreamManager {
     s.segmentText += delta;
     s.lastDeltaMs = Date.now();
     const text = s.segmentText.trim();
-    if (text && this.onPending) this.onPending(s.speakerId, s.speakerName, text, s.segmentStartMs);
+    // Pending is consumed as stable text downstream — never surface primer residue.
+    if (text && this.onPending &&
+        !(this.primerNorm && this.primerNorm.endsWith(normalizeForPrimerMatch(text)))) {
+      this.onPending(s.speakerId, s.speakerName, text, s.segmentStartMs);
+    }
     // A sentence end finalizes long segments mid-speech (>40 chars guards
     // against abbreviation periods), and ANY segment once the audio has gone
     // quiet — short utterances ("Nee, dat is niet waar.") must not wait out

@@ -11,6 +11,9 @@ export interface TranscriptionSegment {
   language: string;
   /** Whether this segment is finalized */
   completed?: boolean;
+  /** Pending text that is already model-committed and will never be retracted
+   * (realtime pipeline only) — consumers may act on it before finalization. */
+  stable?: boolean;
   /** Absolute UTC start time as ISO string */
   absolute_start_time?: string;
   /** Absolute UTC end time as ISO string */
@@ -229,6 +232,7 @@ export class SegmentPublisher {
       const mapSeg = (s: TranscriptionSegment) => ({
         start: s.start, end: s.end, text: s.text, language: s.language,
         completed: s.completed ?? true, speaker: s.speaker, segment_id: s.segment_id,
+        ...(s.stable && { stable: true }),
         ...(s.absolute_start_time && { absolute_start_time: s.absolute_start_time }),
         ...(s.absolute_end_time && { absolute_end_time: s.absolute_end_time }),
       });
