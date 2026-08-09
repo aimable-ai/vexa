@@ -53,6 +53,10 @@ export interface RealtimeTranscriptionConfig {
   maxSegmentChars?: number;
   /** Close an idle speaker session after this many seconds without audio. Default 20. */
   idleTimeoutSec?: number;
+  /** Recycle a session once it has heard this much audio (seconds). The server
+   * never guards its own context (~8k tokens ≈ 11 min of audio); a session that
+   * never idles overflows it and generation degenerates permanently. Default 240. */
+  sessionMaxAudioSec?: number;
   /** Meeting language (2-letter code). Selects the spoken primer that locks the
    * model's language on every session open; no primer when unset/unknown. */
   language?: string;
@@ -83,7 +87,14 @@ interface SpeakerSession {
   /** Synthetic-silence tail flush already sent for the current pause. */
   tailFlushed: boolean;
   lastCommitMs: number;
+  /** Audio fed to the current WS session (seconds), for the context guard. */
+  sessionAudioSec: number;
 }
+
+/** Past sessionMaxAudioSec, wait for a pause to recycle; force it after this
+ * much extra audio — a mid-speech recycle costs a word or two once, context
+ * overflow costs everything until the next idle. */
+const SESSION_FORCE_EXTRA_SEC = 160;
 
 const SENTENCE_END = /[.!?…]["')\]]?\s*$/;
 
@@ -119,6 +130,7 @@ export class RealtimeSpeakerStreamManager {
       segmentGapMs: config.segmentGapMs ?? 800,
       maxSegmentChars: config.maxSegmentChars ?? 600,
       idleTimeoutSec: config.idleTimeoutSec ?? 20,
+      sessionMaxAudioSec: config.sessionMaxAudioSec ?? 240,
       language: config.language ?? '',
     };
     this.httpLive = /^https?:\/\//i.test(this.cfg.realtimeUrl);
@@ -142,6 +154,7 @@ export class RealtimeSpeakerStreamManager {
       sequenceNumber: 0, generation: 0, closed: false,
       primerPending: false, primerText: '', primerSentMs: 0,
       audioSinceCommit: false, lastCommitMs: 0, tailFlushed: true,
+      sessionAudioSec: 0,
     });
     log(`[Realtime] Added speaker "${speakerName}" (${speakerId})`);
   }
@@ -173,6 +186,7 @@ export class RealtimeSpeakerStreamManager {
     }
     s.lastAudioMs = now;
     s.tailFlushed = false;
+    s.sessionAudioSec += audioData.length / this.cfg.sampleRate;
     const pcm = this.float32ToPcm16(audioData);
     if (s.ws && s.wsReady) {
       this.sendAudio(s, pcm);
@@ -204,6 +218,7 @@ export class RealtimeSpeakerStreamManager {
   // ── internals ──────────────────────────────────────────────────────────
 
   private connect(s: SpeakerSession): void {
+    s.sessionAudioSec = 0;
     if (this.httpLive) { this.connectHttpLive(s); return; }
     const generation = s.generation;
     let WS: any = (globalThis as any).WebSocket;
@@ -478,6 +493,25 @@ export class RealtimeSpeakerStreamManager {
           now - s.lastDeltaMs > this.cfg.segmentGapMs &&
           now - s.lastAudioMs > this.cfg.segmentGapMs) {
         this.finalizeSegment(s, 'gap');
+      }
+      // Context guard — the server never bounds its own context (~8k tokens
+      // ≈ 11 min of audio); a session that never idles (monologue, noisy
+      // mic) overflows it and generation degenerates permanently. Recycle at
+      // the first pause after the audio budget is spent (tail flush has
+      // already released the withheld words by then), forced past the extra
+      // margin even mid-speech. Reconnect eagerly so the primer locks the
+      // language before speech resumes.
+      if (s.ws && s.wsReady && s.sessionAudioSec >= this.cfg.sessionMaxAudioSec &&
+          ((s.tailFlushed && now - s.lastAudioMs > 700) ||
+           s.sessionAudioSec >= this.cfg.sessionMaxAudioSec + SESSION_FORCE_EXTRA_SEC)) {
+        log(`[Realtime] Session recycle for "${s.speakerName}" (${Math.round(s.sessionAudioSec)}s audio)`);
+        this.finalizeSegment(s, 'recycle');
+        const gen = s.generation;
+        this.closeSession(s);
+        s.closed = false;
+        s.generation = gen + 1;
+        this.connect(s);
+        continue;
       }
       // Long idle → close the socket (reopens on next audio).
       if (s.ws && now - s.lastAudioMs > this.cfg.idleTimeoutSec * 1000) {
