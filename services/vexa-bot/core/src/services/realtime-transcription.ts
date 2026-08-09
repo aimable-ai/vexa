@@ -344,7 +344,9 @@ export class RealtimeSpeakerStreamManager {
     if (payload.startsWith('{')) {
       try {
         const obj = JSON.parse(payload);
-        const t = obj.delta ?? obj.partial_text ?? obj.text;
+        // Deltas only — transcript.text.done carries the WHOLE utterance
+        // again, so treating its `text` as a delta doubles every utterance.
+        const t = obj.delta ?? obj.partial_text;
         return typeof t === 'string' && t ? t : null;
       } catch { return null; }
     }

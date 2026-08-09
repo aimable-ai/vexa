@@ -109,6 +109,17 @@ async function test(name: string, fn: () => Promise<void>) {
     mgr.removeAll();
   });
 
+  await test('HTTP-live parser takes deltas but never the done-event full text', async () => {
+    const mgr = createManager();
+    const parse = (line: string) => (mgr as any).parseLiveDelta(line);
+    assert.strictEqual(parse('data: {"type":"transcript.text.delta","delta":" kan"}'), ' kan');
+    assert.strictEqual(parse('partial_text= in Firefly'), ' in Firefly');
+    // transcript.text.done repeats the whole utterance — consuming it doubles
+    // every utterance in the transcript (observed against audiocpp_server).
+    assert.strictEqual(parse('data: {"type":"transcript.text.done","text":"Ik kan in Firefly."}'), null);
+    mgr.removeAll();
+  });
+
   console.log(`\n${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);
 })();
