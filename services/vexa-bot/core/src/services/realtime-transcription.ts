@@ -445,7 +445,7 @@ export class RealtimeSpeakerStreamManager {
       log(`[Realtime] [FILTERED] Primer residue for "${s.speakerName}": "${text}"`);
       return;
     }
-    if (isHallucination(text)) {
+    if (isHallucination(text, { allowShort: true })) {
       log(`[Realtime] [FILTERED] Hallucination for "${s.speakerName}": "${text.substring(0, 60)}"`);
       return;
     }

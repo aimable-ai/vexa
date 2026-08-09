@@ -50,7 +50,7 @@ function loadPhrases(): Set<string> {
 /**
  * Returns true if the text is a hallucination and should be dropped.
  */
-export function isHallucination(text: string): boolean {
+export function isHallucination(text: string, opts?: { allowShort?: boolean }): boolean {
   if (!text?.trim()) return true;
 
   const trimmed = text.trim();
@@ -64,9 +64,10 @@ export function isHallucination(text: string): boolean {
   if (stripped !== lower && db.has(stripped + '...')) return true;
   if (stripped !== lower && db.has(stripped + '.')) return true;
 
-  // Too short (single word < 10 chars)
+  // Too short (single word < 10 chars) — Whisper-path heuristic; realtime
+  // (Voxtral) passes allowShort because lone short words there are real speech.
   const words = trimmed.split(/\s+/);
-  if (words.length <= 1 && trimmed.length < 10) return true;
+  if (!opts?.allowShort && words.length <= 1 && trimmed.length < 10) return true;
 
   // Repetition loop: same 3-6 word phrase repeated 3+ times
   if (words.length >= 9) {
