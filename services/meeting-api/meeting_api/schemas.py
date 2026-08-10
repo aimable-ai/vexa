@@ -535,6 +535,10 @@ class MeetingCreate(BaseModel):
         "realtime",
         description="Transcription priority tier: 'realtime' (default) or 'deferred'"
     )
+    transcription_engine: Optional[str] = Field(
+        None,
+        description="Transcription engine: 'whisper', 'voxtral' or 'reson8'. Default: server configuration."
+    )
     recording_enabled: Optional[bool] = Field(
         None,
         description="Optional per-meeting override for recording persistence (true/false)."
@@ -703,6 +707,18 @@ class MeetingCreate(BaseModel):
         if normalized not in ALLOWED_TRANSCRIPTION_TIERS:
             raise ValueError(
                 f"Invalid transcription_tier '{v}'. Must be one of: {sorted(ALLOWED_TRANSCRIPTION_TIERS)}"
+            )
+        return normalized
+
+    @field_validator('transcription_engine')
+    @classmethod
+    def validate_transcription_engine(cls, v):
+        if v is None or v == "":
+            return None
+        normalized = str(v).strip().lower()
+        if normalized not in {"whisper", "voxtral", "reson8"}:
+            raise ValueError(
+                f"Invalid transcription_engine '{v}'. Must be one of: ['reson8', 'voxtral', 'whisper']"
             )
         return normalized
 

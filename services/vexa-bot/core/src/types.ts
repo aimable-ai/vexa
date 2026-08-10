@@ -29,6 +29,10 @@ export type BotConfig = {
   // Per-speaker transcription
   transcriptionServiceUrl?: string;   // HTTP endpoint for transcription-service
   transcriptionServiceToken?: string; // Bearer token for transcription-service
+  /** Engine selection. Default infers from the URL shape (back-compat);
+   * 'reson8' must be explicit — its wss:// URL is indistinguishable from
+   * the Voxtral realtime one. */
+  transcriptionEngine?: 'whisper' | 'voxtral' | 'reson8';
 
   // Voice agent / meeting interaction interface
   voiceAgentEnabled?: boolean;  // Enable TTS, chat, screen share capabilities

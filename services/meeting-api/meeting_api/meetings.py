@@ -1103,6 +1103,22 @@ async def request_bot(
         "transcriptionServiceUrl": os.getenv("TRANSCRIPTION_SERVICE_URL"),
         "transcriptionServiceToken": os.getenv("TRANSCRIPTION_SERVICE_TOKEN"),
     }
+    # Engine selection (whisper | voxtral | reson8). Per-request choice wins,
+    # then the deployment default. reson8 swaps in the managed API's URL and
+    # key here so the RESON8 credential lives only in this service's env.
+    transcription_engine = req.transcription_engine or os.getenv("TRANSCRIPTION_ENGINE")
+    if transcription_engine:
+        bot_config["transcriptionEngine"] = transcription_engine
+        if transcription_engine == "reson8":
+            bot_config["transcriptionServiceUrl"] = os.getenv(
+                "RESON8_REALTIME_URL", "wss://api.reson8.dev/v1/speech-to-text/realtime")
+            bot_config["transcriptionServiceToken"] = os.getenv("RESON8_API_KEY", "")
+        elif transcription_engine == "voxtral":
+            bot_config["transcriptionServiceUrl"] = os.getenv(
+                "VOXTRAL_REALTIME_URL", os.getenv("TRANSCRIPTION_SERVICE_URL"))
+        elif transcription_engine == "whisper":
+            bot_config["transcriptionServiceUrl"] = os.getenv(
+                "WHISPER_SERVICE_URL", os.getenv("TRANSCRIPTION_SERVICE_URL"))
     if req.recording_enabled is not None:
         bot_config["recordingEnabled"] = bool(req.recording_enabled)
     if req.voice_agent_enabled is not None:

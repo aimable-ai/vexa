@@ -29,6 +29,7 @@ import { TranscriptionClient } from './services/transcription-client';
 import { SegmentPublisher } from './services/segment-publisher';
 import { SpeakerStreamManager } from './services/speaker-streams';
 import { RealtimeSpeakerStreamManager } from './services/realtime-transcription';
+import { Reson8SpeakerStreamManager } from './services/reson8-transcription';
 import { resolveSpeakerName, clearSpeakerNameCache, isTrackLocked, isNameTaken, reportTrackAudio, getLockedMapping } from './services/speaker-identity';
 import { SileroVAD } from './services/vad';
 import { isHallucination } from './services/hallucination-filter';
@@ -153,7 +154,7 @@ let redisPublisher: RedisClientType | null = null;
 let transcriptionClient: TranscriptionClient | null = null;
 let segmentPublisher: SegmentPublisher | null = null;
 export function getSegmentPublisher(): SegmentPublisher | null { return segmentPublisher; }
-let speakerManager: SpeakerStreamManager | RealtimeSpeakerStreamManager | null = null;
+let speakerManager: SpeakerStreamManager | RealtimeSpeakerStreamManager | Reson8SpeakerStreamManager | null = null;
 let vadModel: SileroVAD | null = null;
 /** Per-speaker VAD states for streaming mode (GMeet only) */
 import type { VadSpeakerState } from './services/vad';
@@ -1265,14 +1266,19 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
 
   const meetingId = botConfig.meeting_id;
 
-  // A ws:// (or wss://) URL selects the Voxtral realtime pipeline instead of
-  // the Whisper HTTP + LocalAgreement loop (AIM-1377).
-  // ws(s):// → OpenAI-style realtime WS (vLLM); an http(s) URL on the
-  // audio.cpp live endpoint (/transcriptions/live) → HTTP-live transport.
-  // Any other http(s) URL stays on the legacy Whisper HTTP + LocalAgreement path.
-  const useRealtime =
-    /^wss?:\/\//.test(transcriptionServiceUrl) ||
-    /\/transcriptions\/live/.test(transcriptionServiceUrl);
+  // Engine selection: explicit config first, then URL-shape inference for
+  // back-compat. ws(s):// → Voxtral realtime WS (vLLM); an http(s) URL on the
+  // audio.cpp live endpoint (/transcriptions/live) → Voxtral HTTP-live.
+  // Any other http(s) URL → legacy Whisper HTTP + LocalAgreement.
+  // 'reson8' can only be explicit (or a reson8.dev URL) — its wss:// URL is
+  // otherwise indistinguishable from the Voxtral one.
+  const engine: 'whisper' | 'voxtral' | 'reson8' =
+    botConfig.transcriptionEngine ||
+    (process.env.TRANSCRIPTION_ENGINE as 'whisper' | 'voxtral' | 'reson8' | undefined) ||
+    (/reson8\./.test(transcriptionServiceUrl) ? 'reson8'
+      : /^wss?:\/\//.test(transcriptionServiceUrl) || /\/transcriptions\/live/.test(transcriptionServiceUrl) ? 'voxtral'
+      : 'whisper');
+  const useRealtime = engine !== 'whisper';
 
   try {
     if (!useRealtime) {
@@ -1313,12 +1319,21 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
     }
 
     if (useRealtime) {
-      const rtm = new RealtimeSpeakerStreamManager({
-        realtimeUrl: transcriptionServiceUrl,
-        // Meeting language drives the spoken primer that locks the model's
-        // language per session (there is no API parameter for it).
-        language: currentLanguage && currentLanguage !== 'auto' ? currentLanguage : '',
-      });
+      const rtm = engine === 'reson8'
+        ? new Reson8SpeakerStreamManager({
+            // Only trust the configured URL if it is actually a RESON8 one —
+            // platforms that select the engine explicitly may still send the
+            // whisper/voxtral URL alongside.
+            serviceUrl: /reson8\./.test(transcriptionServiceUrl) ? transcriptionServiceUrl : undefined,
+            apiKey: botConfig.transcriptionServiceToken || process.env.RESON8_API_KEY || '',
+            language: currentLanguage && currentLanguage !== 'auto' ? currentLanguage : '',
+          })
+        : new RealtimeSpeakerStreamManager({
+            realtimeUrl: transcriptionServiceUrl,
+            // Meeting language drives the spoken primer that locks the model's
+            // language per session (there is no API parameter for it).
+            language: currentLanguage && currentLanguage !== 'auto' ? currentLanguage : '',
+          });
       speakerManager = rtm;
       confirmedBatches = new Map();
 
@@ -1365,7 +1380,7 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
         await segmentPublisher.publishTranscript(speakerName, speakerConfirmed, pending);
       };
 
-      log('[PerSpeaker] RealtimeSpeakerStreamManager created and wired (Voxtral realtime)');
+      log(`[PerSpeaker] Realtime speaker manager created and wired (engine: ${engine})`);
       return true;
     }
 
