@@ -67,3 +67,13 @@ CLAUDE_JSON_PATH=
 
 # Billing hooks (optional — for hosted service)
 # POST_MEETING_HOOKS=https://your-billing-webhook
+
+# --- Transcription engine selection (AIM-1377) ---
+# Deployment default engine: whisper | voxtral | reson8 (empty = infer from URL)
+TRANSCRIPTION_ENGINE=
+# Per-engine URLs (only needed for the engines you offer):
+WHISPER_SERVICE_URL=
+VOXTRAL_REALTIME_URL=
+RESON8_REALTIME_URL=wss://api.reson8.dev/v1/speech-to-text/realtime
+# RESON8 managed-API key — in CI/CD set via GitHub Actions secret RESON8_API_KEY
+RESON8_API_KEY=
