@@ -5,164 +5,254 @@ The **reference implementation** is our fork's old tree, checked out side by sid
 
     /Users/ludgervisser/Projects/aimable/vexa        (branch aim-1377-voxtral-realtime, HEAD d5364bd6)
 
-Do NOT transplant code. Re-implement each feature natively in 0.12's module structure
-(`core/meetings/modules/*`, turborepo/pnpm, contract schemas), reading the old tree for
-behavior and constants. The old tree's layout (`services/vexa-bot/core/src/...`) no longer
-exists here.
+Do NOT transplant code. Re-implement each feature natively in 0.12's module structure,
+reading the old tree for behavior and constants. The old tree's layout
+(`services/vexa-bot/core/src/...`) no longer exists here.
+
+## Decisions (aligned with Ludger, 2026-08-11)
+
+1. **Engine seam**: port the realtime pipeline as a sibling module implementing the
+   `MixedTranscriberFactory` seam (`feedAudio`/`recordHint`/`dispose` — see
+   `core/meetings/services/bot/src/pipeline.ts:63-64`, injected via
+   `opts.createMixedTranscriber` at `createBotPipeline`, pipeline.ts:260-280),
+   composing `ClusterNameBinder` (importable from `@vexa/mixed-pipeline`) for naming.
+   Do NOT batch-shim Voxtral behind their ChunkedTranscriber.
+2. **No sealed-contract changes.** `invocation.v1` and `transcript.v1` stay untouched:
+   - Per-meeting engine selection: dispatch on the shape of the EXISTING
+     `transcriptionServiceUrl` invocation field (`ws://`/`wss://` → Voxtral realtime;
+     reson8 URL pattern → reson8; else whisper batch). Per-meeting keys ride the
+     existing `transcriptionServiceToken`. Deployment defaults via runtime profile
+     `base_env` (`core/runtime/src/runtime_kernel/profiles.py:97-108` env-key tuple).
+   - The `stable` flag rides the additive `/ws` `transcript` frame (ws.v1 frames are
+     forwarded verbatim from redis and tolerate extra fields), NOT the sealed
+     transcript.v1 segment schema.
+3. **Deployment: compose from the start** (`deploy/compose`), upstream's production
+   recommendation. No lite (single-bot X11), no helm. Bot image built from source —
+   the published `vexaai/vexa-bot:dev` tag is the incompatible 0.10 line.
+4. **Calendar create-meeting (AIM-1429) moves to aimable-platform.** 0.12 has no
+   calendar service and gets none in the fork; platform creates the Meet via Google
+   API, then `POST /bots`. Old fork's calendar commits are NOT ported.
 
 ## Ground rules
 
-- **Referee, not vibes**: a feature is ported when (a) upstream gates pass
-  (`node scripts/gates.mjs all`), (b) module isolation checks pass, (c) its acceptance
-  criteria below are demonstrated — preferably via the captured-signal.v1 replay harness
-  (`core/meetings/eval/`: record a session with `VEXA_CAPTURE_SIGNAL=1`, distill with
-  `eval/src/distill.mjs`, replay with `REPLAY_FIXTURE=<session> replay.test.ts`).
-- **Tuning constants are load-bearing.** Every number in the table below was derived
-  empirically against real meetings and the vLLM Voxtral realtime server. Carry them over
-  verbatim; do not "clean up" or re-derive.
-- **The 0.12 STT seam** is `core/meetings/modules/mixed-pipeline/src/chunked-transcriber.ts`
-  (+ the `whisper` module as the existing HTTP STT client, and the documented FunASR
-  custom-STT path). New engines should sit beside `whisper` as sibling modules and be
-  selected by config, mirroring how FunASR plugs in.
-- **Old dev stack stays live** (vexa box, compose project `vexa-dev`, :9056) for A/B
-  against this port. Do not touch it.
-- Upstream still mixes all participant audio (`mixed-capture-core`) — same as our fork.
-  Per-track ASR is explicitly out of scope for this port.
+- **Referee**: a feature is ported when (a) `node scripts/gates.mjs all` is green,
+  (b) its acceptance criteria are demonstrated — preferably via the captured-signal.v1
+  replay harness: record with `VEXA_CAPTURE_SIGNAL=1` (or invocation
+  `captureSignalEnabled`; output `VEXA_CAPTURE_SIGNAL_DIR`, default
+  `/tmp/captured-signal`), distill with `core/meetings/eval/src/distill.mjs`, replay
+  with `REPLAY_FIXTURE=<fixture> pnpm --filter @vexa/bot run replay`. A new engine
+  module with its own `replay` npm script is picked up by `gate:replay` automatically.
+  For STT *quality* A/B (Voxtral vs whisper) use the counting-fixture path
+  (`core/meetings/eval/COUNTING-FIXTURES.md`).
+- **Tuning constants are load-bearing** (table below). Carry them verbatim.
+- **Old dev stack stays live** (vexa box, compose project `vexa-dev`, :9056) for A/B.
+- New-module mechanics: follow the checklist in "Adding a module" below — CALM chart
+  registration + `pnpm seal:arch` is mandatory (`gate:dataflow` completeness check
+  reds on any unregistered `core/meetings/modules/*` dir), every new dir needs a
+  README (`gate:readme`), private packages must declare `"license": "Apache-2.0"`-ish
+  or `gate:licenses` rejects them, and a browser-side module must be added in THREE
+  places (build-browser-utils.mjs + both Dockerfiles' brick lists).
 
-## Why we're porting (context for prioritization)
+## Why we're porting
 
 First customer is on MS Teams. 0.12 ships working Teams speaker attribution
-(`core/meetings/modules/teams-capture/src/msteams-speakers.ts`, voice-level-outline
-signal) that the old fork lacks. The port's end state = our transcription engines running
-on a tree that has that module. Anything that blocks a Teams demo outranks anything else.
+(`core/meetings/modules/teams-capture/src/msteams-speakers.ts`: voice-level-outline
+signal + occlusion class, debounced, caption-independent) that the old fork lacks.
+Teams rides the mixed lane (one summed stream + DOM-hint ClusterNameBinder);
+Meet rides a per-participant lane (per-element AudioContext, per-channel streams).
+Attribution quality on Teams is tuned via env knobs (`VEXA_HINT_*`,
+`VEXA_FLICKER_MIN_MS`; page heartbeat 2 s is coupled to `OPEN_TURN_GRACE_MS` 4 s — keep 2×).
 
 ## Phase 0 — baseline (do first, no porting)
 
-Get stock 0.12 running on the vexa box next to the two existing stacks (its own compose
-project + ports). One Google Meet and one Teams smoke call with the stock whisper path.
-Record a captured-signal.v1 session of each; these become the replay fixtures for
-everything below.
-Acceptance: both calls produce speaker-attributed transcripts; fixtures replay green.
+Stand up the stock **compose** stack (`deploy/compose`) on the vexa box next to the
+two existing stacks: own compose project name, free host ports (defaults gateway
+:18056 / admin :18057 collide with nothing today, verify at deploy time), repo-root
+`.env` from `deploy/compose/.env.example`, bot image built from source (`make bot`).
+Point `TRANSCRIPTION_SERVICE_URL` at a whisper endpoint (their `deploy/transcription`
+CPU unit is fine for smoke). One Google Meet and one Teams smoke call.
+Record a captured-signal.v1 session of each → the replay fixtures for everything below.
+Acceptance: both calls produce speaker-attributed transcripts; fixtures replay green
+(4 universal checks); `node scripts/gates.mjs all` green on the untouched tree.
 
 ## Features to port (in order)
 
-### P1. Voxtral realtime engine (the core)
-Reference: `services/vexa-bot/core/src/services/realtime-transcription.ts` (~590 lines)
-plus commits 9a0ae676, cc5f49a5, c2f774d4, eef84318, 26d3b689, 1962f2f5, 0c47a622,
-e2e60e6d, 82a347c6, fb967ed7, ad5f1ae6.
+### P1. Voxtral realtime engine module (`@vexa/transcribe-voxtral` or similar)
+Reference: old tree `services/vexa-bot/core/src/services/realtime-transcription.ts`
+(~590 lines); commits 9a0ae676, cc5f49a5, c2f774d4, eef84318, 26d3b689, 1962f2f5,
+0c47a622, e2e60e6d, 82a347c6, fb967ed7, ad5f1ae6.
 
-Behavior (each line is a requirement, with its why):
-- WebSocket session to a vLLM Voxtral realtime server (OpenAI realtime-style events).
-- **Commit cadence**: the server only transcribes *committed* audio. Append PCM
-  continuously, commit every 750 ms. Without explicit commits vLLM sits idle (cc5f49a5).
-- **Segment boundaries gate on audio silence**, never on `transcription.done` — the
-  server emits `.done` mid-utterance; treating it as a boundary splits sentences
-  (eef84318). Gap threshold 800 ms of silence closes a segment; sentence-end
-  punctuation + quiet audio finalizes early (c2f774d4).
-- **Tail flush**: on speech pause push synthetic silence so the model releases the last
-  words — 1200 ms (was 800; raised for the 960 ms delay-conditioned model) (26d3b689,
-  1962f2f5).
-- **Context guard**: recycle the WS session *before* the server's context ceiling;
-  carry-over so the transcript is seamless (0c47a622).
-- **`stable` flag on pending segments**: Voxtral deltas are model-committed text, so
-  pending segments are marked stable=true; downstream (Agreed wake-word dispatch,
-  AIM-1446 in aimable-platform) acts on stable drafts before finalization (e2e60e6d).
-  This flag must survive into whatever transcript.v1 shape 0.12 publishes.
-- **Keep short single-word segments** on the realtime path — the generic
-  min-length/hallucination filter must not eat one-word utterances ("Ja.", "Oké.")
-  because Voxtral doesn't hallucinate on silence the way whisper does (82a347c6).
-- **HTTP-live transport variant** (audio.cpp server) beside the WS transport. Parser
-  rule: `transcript.text.done` is a terminal event, not a delta — consuming it as a
-  delta duplicates the final text (ad5f1ae6, fb967ed7).
+Shape: a module exporting a `MixedTranscriberFactory`-compatible object
+(`feedAudio(pcm, tsMs)`, `recordHint(name, kind, tMs, isEnd)`, `dispose()`), selected
+in `createBotPipeline` when `transcriptionServiceUrl` is `ws(s)://`. It emits through
+the same callbacks their ChunkedTranscriber uses (`publish`/`publishPending`/
+`clearPending`/`rename`/`onError`) and composes their `ClusterNameBinder` for naming.
 
-Acceptance: replay the Phase-0 Meet fixture through the Voxtral engine against the dev
-vLLM server → transcript quality ≥ the old stack on the same fixture; no primer residue;
-no duplicated finals; segments carry stable flags; a >context-length session recycles
-without losing text.
+Behavioral requirements (each with its why):
+- WS session to vLLM Voxtral realtime; continuous PCM append + **commit every 750 ms**
+  (server only transcribes committed audio — cc5f74d4/cc5f49a5).
+- Segment boundaries gate on **audio silence (800 ms)**, never on `transcription.done`
+  (server emits `.done` mid-utterance — eef84318); sentence-end + quiet audio
+  finalizes early (c2f774d4).
+- **Tail flush 1200 ms synthetic silence** on speech pause (>960 ms delay
+  conditioning — 26d3b689, 1962f2f5).
+- **Context guard**: recycle the session before the server context ceiling, seamless
+  carry-over (0c47a622).
+- **Pending segments carry `stable: true`** (deltas are model-committed — e2e60e6d).
+  Rides the additive WS frame (decision 2); platform's wake-word dispatch (AIM-1446)
+  consumes it.
+- **Keep short single-word segments** ("Ja.", "Oké.") — do NOT reuse their gmeet
+  `hallucination-filter.ts` (drops any single word <10 chars) or their whisper-shaped
+  `applyGates`/`isLowConfidenceSegment` on this path (82a347c6).
+- **HTTP-live transport variant** (audio.cpp) beside the WS one; `transcript.text.done`
+  is terminal, never a delta (ad5f1ae6, fb967ed7).
+- **Timestamps**: synthesize epoch-ms `startMs/endMs` in the same clock domain as
+  hints (capture stamps epoch ms at source) — the binder's window matching depends
+  on it; get this wrong and every name misses.
+- **Faults**: map WS failure modes (handshake reject, mid-session close, commit
+  timeout, recycle) onto their `onError` callback + telemetry; their HTTP retry
+  machinery doesn't apply.
+- **Dispose = flush and drain**: push tail silence, await finals, then resolve —
+  their session_end awaits dispose.
+- Isolation gate: declare `ws` (new dep — none exists in the monorepo) in the
+  module's own package.json; FINOS license category check applies.
+
+Acceptance: replay the Phase-0 fixtures through the engine against the dev vLLM
+server → quality ≥ old stack on the same audio; no duplicated finals; pending frames
+carry `stable`; a >context-ceiling session recycles without text loss; determinism
+check (two replays byte-identical) passes.
 
 ### P2. Primer audio (language conditioning)
-Reference: `services/vexa-bot/core/src/services/primer-audio.ts` (~1050 lines);
-commits 83fa9241, 069085b4, e104ffab, 4dfb766e.
+Reference: old `primer-audio.ts` (~1050 lines); commits 83fa9241, 069085b4,
+e104ffab, 4dfb766e. Sub-component of the P1 module.
 
-Behavior: each new realtime session is primed with a short spoken-language audio clip
-(per meeting language, e.g. NL) so the model locks onto the right language from the
-first real utterance. The primer's transcription must be discarded — three separate
-leak paths were fixed and all three rules must carry over:
-- discard-by-similarity threshold **0.85** (0.6 leaked during the model's early period);
-- discard needs a **length threshold** too (short early outputs slipped the similarity
-  check);
-- delay conditioning can release the primer tail *after* the discard window — the
-  filter must also match primer residue appearing in the first real segment.
+Prime each new realtime session with a spoken-language clip (per meeting `language`)
+so the model locks the language from the first utterance. All three primer-residue
+guards carry over: similarity discard threshold **0.85**; plus a **length threshold**;
+plus matching residue that surfaces *after* the discard window (delay conditioning).
+Acceptance: NL fixture → first segment clean, output NL from segment 1.
 
-Acceptance: NL fixture replayed → first segment contains no primer text; language of
-output is NL from segment 1.
+### P3. reson8 engine
+Reference: old `reson8-transcription.ts` (~350 lines after d5364bd6) + tests;
+commits acfe0066, 1a595a49, d5364bd6 (freshest — diff against 1a595a49 first).
 
-### P3. reson8 engine (hosted ASR)
-Reference: `services/vexa-bot/core/src/services/reson8-transcription.ts` (~350 lines
-after d5364bd6) + tests; commits acfe0066, 1a595a49, d5364bd6.
+Same `MixedTranscriberFactory` shape, selected by reson8 URL pattern. Bearer auth =
+the existing `transcriptionServiceToken` invocation field (per-meeting override
+already flows: env ← admin-api bot-context ← per-meeting; token/model replace
+wholesale, never mix — mirror `bot_spawn/service.py:196-222` semantics).
+Acceptance: port the old test cases; live meeting with a reson8 URL + per-meeting
+token produces a transcript.
 
-Behavior: third engine option speaking reson8's realtime protocol. Bearer auth on the
-realtime endpoints. `transcription_api_key` can be overridden **per meeting request**
-(meeting-api schema field, threaded through spawn env to the bot) so different
-tenants/meetings can use different reson8 keys.
-Note: d5364bd6 is the freshest work (committed 2026-08-11, may still be rough) — diff
-it against 1a595a49 to see the final protocol handling before re-implementing.
+### P4. Engine dispatch + deployment env
+No sealed-contract change (decision 2). Work items:
+- URL-shape dispatch in `createBotPipeline`/`createTranscribe` selection point.
+- Deployment defaults (Voxtral WS URL, reson8 URL/key) via profile `base_env`
+  env-tuple (`profiles.py:97-108`) and compose env surfaces; respect
+  `gate:config-contract` (declare any new env var a Python service reads).
+- aimable-platform sends per-meeting `transcriptionServiceUrl`/`transcriptionServiceToken`
+  on `POST /bots`… **verify these are actually accepted per-request** — today the
+  bot-context resolution is env ← admin-api user pref; if per-request STT fields are
+  dropped by `router.py`, add the pass-through in router/service/invocation builder
+  (fields already exist in the sealed schema, so no seal change).
+Acceptance: three meetings on one stack, one per engine, each transcribes; STT
+preflight (503 + 60 s spawn-refusal on bad URL/token) behaves for all three.
 
-Acceptance: unit tests re-expressed against the 0.12 module (old tests:
-`__tests__/reson8-transcription.test.ts`, 232 lines — port the cases, not the file);
-a live meeting with engine=reson8 and a per-request key produces a transcript.
+### P5. Triage list — check before re-implementing
+- **Meet track-swap deafness: CONFIRMED still broken in 0.12** (stream.id-keyed
+  dedupe, no addtrack/replaceTrack handling, source node pinned to first track) in
+  THREE places: `gmeet-capture.ts:60-125`, the mixed re-mix
+  (`capture-bridge.ts:337-366`), `record-chunker` `buildCombinedStream` (no rescan).
+  Port our per-track rebind + rescan (13e1a028, 1cd02d4d). Also fix the AudioContext
+  leak on ended streams while there. **Upstream-PR candidate.**
+- Chrome tab crash → graceful leave; bot mem 4Gi (c9991f0a); runtime profile limits
+  (de40c581) — re-express against runtime kernel profiles.
+- api-gateway 10-min transcribe timeout (f0f4cb6f): **obsolete** — the re-transcribe
+  endpoint is a KNOWN_GAPS no-op in 0.12; deferred-transcribe path differs. Verify
+  whether `transcription_tier: deferred` covers the need.
+- meeting-api batch-commit fix (ff09f5f2): likely obsolete (collector rewritten);
+  verify under load.
+- postgres idle_in_transaction_session_timeout 600 s (c513e3cc): still wanted;
+  compose-level setting.
+- hallucination-filter tweak: superseded by upstream 6aae7478 phrase lists + gates.
 
-### P4. Engine selection plumbing
-Reference: commits 9548c17b, e77f84d4; files `services/meeting-api/meeting_api/meetings.py`,
-`schemas.py`, `deploy/compose/docker-compose.yml`, `deploy/env-example`.
+### P6. Closed / relocated items
+- Junk speaker names: **obsolete in 0.12** — filtered at source
+  (`gmeet-speakers.ts:97,120` JUNK_NAME regex); nothing generates them; Teams refuses
+  nameless hints. (Platform-side `_load_spans` filter still worthwhile while the OLD
+  stack serves prod.)
+- Per-track ASR for Meet: upstream's gmeet lane IS per-participant now. Out of scope
+  for Teams (mixed by design; page comment says so explicitly).
+- Calendar: moved to aimable-platform (decision 4).
+- AIM-1446 wake words: platform-side; consumes the P1 `stable` field on WS frames.
 
-Behavior: `TRANSCRIPTION_ENGINE = whisper | voxtral | reson8` selects the engine;
-per-engine URL env vars (`VOXTRAL_WS_URL`, audio.cpp HTTP URL, reson8 URL) +
-`RESON8_API_KEY`; meeting-api accepts engine + transcription_api_key per meeting and
-passes them to the spawned bot. Map onto 0.12's config/profile system (note upstream
-e896ef16 merged profile base_env into spawn env — use that mechanism, it exists now).
+## aimable-platform adaptation checklist (separate repo, do alongside P4)
 
-Acceptance: three meetings on the same stack, one per engine, each transcribes.
+1. Mint a `bot,tx`-scoped API key (0.12 gateway enforces scopes; bot-only key → 403
+   on /transcripts).
+2. Tolerate new statuses (`needs_help`, `idle`, `scheduled`) + the auto-subscribed
+   `u:{user_id}:meetings` WS frames (flat `status` field).
+3. Use `continue_meeting: true` on bot re-create — kills the stale-WS/meeting-id
+   churn bug (AIM-1445 class).
+4. Sanitize `native_meeting_id` (no `? # & = /` or whitespace, ≤255 — hard 422s now).
+5. Handle `POST /bots` 503 (STT preflight red, 60 s refusal window) distinctly from 5xx.
+6. Webhooks: dedupe on `event_id` (at-least-once, two events per FSM advance);
+   explicitly enable needed events (default = meeting.completed only). We're likely
+   the first real webhook receiver on 0.12 — validate early.
+7. Drop `POST /meetings/{id}/transcribe` + public share-URL usage (gone/changed).
+8. Re-home AIM-1429 create-meeting into the platform.
+9. Read the `stable` field off WS transcript frames for wake-word dispatch.
 
-### P5. Triage list — check before re-implementing (may already be fixed in 0.12)
-For each: find the equivalent code in 0.12, decide ported/obsolete/still-needed, note
-the verdict here.
-- Meet audio watcher binds per **track**; Meet swaps tracks inside an existing
-  MediaStream and rebinding must follow (13e1a028, 1cd02d4d). 0.12's gmeet-capture was
-  rewritten — verify with a long Meet call whether audio goes deaf on track swap.
-- Chrome tab crash → graceful leave; bot mem limit 4Gi (c9991f0a); runtime-api ACTIVE
-  profile 4Gi (de40c581).
-- meeting-api: batch commit for deferred transcribe (ff09f5f2); /bots/status and
-  admission fixes exist upstream already (44973432, 7f940e8c).
-- api-gateway 10-min read timeout on `/meetings/{id}/transcribe` (f0f4cb6f).
-- postgres `idle_in_transaction_session_timeout` 600 s (c513e3cc).
-- Calendar-service create-meeting + per-user OAuth refresh (AIM-1429: 86fddb3a,
-  7f670f84, aaa20334) — upstream's calendar service also moved; check layout first.
-- hallucination-filter tweak (7-line diff in old tree) — 0.12 has its own silence-
-  hallucination gate (6aae7478); ours may be redundant.
+## Fork hygiene (one-time, this repo)
 
-### P6. Deferred / not in this port
-- Junk speaker-name filtering (`Google Participant (spaces/…)` / `Teams Participant (…)`)
-  — verify whether 0.12's speaker modules still generate these; if yes, file upstream
-  or patch here. Platform-side `_load_spans` filter is an aimable-platform change,
-  tracked separately.
-- Per-track ASR for Meet — out of scope (see ground rules).
-- AIM-1446 wake words — lives in aimable-platform; only the P1 `stable` flag matters here.
+- Prune upstream-org GitHub workflows (`contribution-rights.yml`, `merge-card*.yml`,
+  `docs-current.yml`, `pr-welcome.yml`, `pr-value.yml`, `release-*.yml`) — they fail
+  loudly off the upstream org.
+- Decide gate policy for fork CI: keep the pre-push static subset; expect
+  `gate:docs-version`/`gate:parity` to red if we version independently or drop
+  features — disable those two deliberately, documented here.
+- Write a fork-level CLAUDE.md overriding upstream's AGENTS.md where needed (their
+  D13 forbids AI co-author trailers; our repos require them — fork policy: keep our
+  trailer convention).
+- Never bake the MinIO image (AGPL) into a redistributed artifact; operator-pulled
+  sidecar only.
 
 ## Tuning constants (verbatim, with provenance)
 
 | Constant | Value | Why | Commit |
 |---|---|---|---|
-| Audio commit interval | 750 ms | vLLM transcribes only committed audio; latency/quality balance | c2f774d4 |
-| Silence gap = segment boundary | 800 ms | shorter splits mid-sentence | c2f774d4 |
-| Tail-flush synthetic silence | 1200 ms | must exceed 960 ms delay conditioning | 1962f2f5 |
-| Primer discard similarity | 0.85 | 0.6 leaked primer tail in early model period | 069085b4 |
+| Audio commit interval | 750 ms | vLLM transcribes only committed audio | c2f774d4 |
+| Silence gap = boundary | 800 ms | shorter splits mid-sentence | c2f774d4 |
+| Tail-flush silence | 1200 ms | must exceed 960 ms delay conditioning | 1962f2f5 |
+| Primer discard similarity | 0.85 | 0.6 leaked in early model period | 069085b4 |
 | Primer discard | + length threshold | similarity alone missed short leaks | e104ffab |
-| Sentence-end finalize | on quiet audio only | punctuation alone is unreliable | c2f774d4 |
+| Sentence-end finalize | quiet audio only | punctuation alone unreliable | c2f774d4 |
 
-(When re-implementing, grep the old files for these numbers to find the exact guard
-logic around each.)
+Upstream knobs relevant to Teams tuning: `VEXA_HINT_MIN_COVERAGE` 0.35,
+`VEXA_HINT_MIN_SUPPORT_MS` 450, `VEXA_HINT_MIN_CONFIDENCE` 0.6,
+`VEXA_FLICKER_MIN_MS` 1000, `KIND_LAG_MS[dom-outline]` 200,
+`OPEN_TURN_GRACE_MS` 4000 (= 2× page heartbeat — keep the ratio).
+
+## Adding a module (0.12 mechanics, condensed)
+
+1. `core/meetings/modules/<name>/`: package.json (`@vexa/<name>`, exports map,
+   permissive license string, build/test/check:isolation scripts), tsconfig extending
+   `tsconfig.base.json`, `scripts/check-isolation.js` (copy capture-codec's), README
+   in every dir, ≥1 `src/*.test.ts`.
+2. Register in `architecture.calm.json` (node + `meetings-composed` composed-of entry)
+   → `pnpm seal:arch` (restamps seal + regenerates docs/views/architecture.dsl).
+3. Node-side: add `workspace:*` dep to the consumer (bot picks it up via
+   `@vexa/bot...`). Browser-side: build-browser-utils.mjs + BOTH Dockerfile brick
+   lists (`deploy/lite/Dockerfile.lite:40`, `core/meetings/services/bot/Dockerfile:71`).
+4. New test env vars → `turbo.json` `passThroughEnv`. New Python-service env vars →
+   that service's config.v1 declaration + compose/helm/lite surfaces.
+5. Prove: `pnpm --filter @vexa/<name> build test` → replay fixture → `node
+   scripts/gates.mjs all`.
 
 ## Progress log
 
-- 2026-08-11: worktree created from upstream/main 4c1612d8; ticket AIM-1467; PORTING.md written. Phase 0 not started.
+- 2026-08-11: worktree created from upstream/main 4c1612d8; ticket AIM-1467; PORTING.md v1.
+- 2026-08-11: 4-agent deep investigation of 0.12 (STT seam, capture/speakers,
+  API/runtime, governance). Decisions locked with Ludger: realtime module via
+  MixedTranscriberFactory; no sealed-contract changes (URL-shape engine dispatch,
+  stable via additive WS field); compose deployment; calendar → aimable-platform.
+  PORTING.md rewritten to v2. Phase 0 not started.
