@@ -6,7 +6,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./binder": { "types": "./dist/cluster-name-binder.d.ts", "default": "./dist/cluster-name-binder.js" }
   },
   "files": ["dist"],
   "scripts": {

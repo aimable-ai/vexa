@@ -1,0 +1,28 @@
+{
+  "name": "@vexa/stt-live",
+  "version": "0.1.0",
+  "description": "Streaming realtime STT engine for the mixed lane: one live session (vLLM Voxtral realtime WS, or audio.cpp HTTP-live) streams model-committed transcript deltas; segments finalize on sentence/silence boundaries and are named by the shared hints binder. No submit/confirm loop.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsx src/voxtral-transcriber.test.ts && tsx src/reson8-transcriber.test.ts && tsx src/live-transport.test.ts",
+    "check:isolation": "node scripts/check-isolation.js"
+  },
+  "dependencies": {
+    "@vexa/mixed-pipeline": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

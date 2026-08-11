@@ -323,6 +323,28 @@ importers:
         specifier: ^5.6.0
         version: 5.9.3
 
+  core/meetings/modules/stt-live:
+    dependencies:
+      '@vexa/mixed-pipeline':
+        specifier: workspace:*
+        version: link:../mixed-pipeline
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.0
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      '@types/ws':
+        specifier: ^8.5.0
+        version: 8.18.1
+      tsx:
+        specifier: ^4.19.0
+        version: 4.22.4
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
   core/meetings/modules/teams-capture:
     devDependencies:
       '@types/node':
@@ -379,6 +401,9 @@ importers:
       '@vexa/remote-browser':
         specifier: workspace:*
         version: link:../../modules/remote-browser
+      '@vexa/stt-live':
+        specifier: workspace:*
+        version: link:../../modules/stt-live
       '@vexa/transcribe-whisper':
         specifier: workspace:*
         version: link:../../modules/whisper

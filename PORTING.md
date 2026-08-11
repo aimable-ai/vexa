@@ -143,7 +143,28 @@ wholesale, never mix — mirror `bot_spawn/service.py:196-222` semantics).
 Acceptance: port the old test cases; live meeting with a reson8 URL + per-meeting
 token produces a transcript.
 
-### P4. Engine dispatch + deployment env
+### P4. Engine dispatch + deployment env — IMPLEMENTED 2026-08-11 (see Progress log)
+Resolution of the open items:
+- Dispatch lives in `bot/src/pipeline.ts` `liveEngineForUrl`: `ws(s)://` → live engine
+  (reson8 by host match, else voxtral); `http(s)://…#live` → voxtral HTTP-live
+  (fragment stripped before use); anything else → stock chunked whisper lane.
+  Mixed lane only; `transcribeEnabled:false` never engages a live engine; an
+  injected test factory always wins.
+- **Engine selection rides the admin-api Settings-configured backend** (per-user
+  transcription url/token), NOT the env URL: the spawn gate's cached STT probe
+  verdict only guards the ENV backend (`service.py` "the ENV backend only"), so a
+  `ws://` Settings URL spawns cleanly while env stays the probeable whisper URL.
+  aimable-platform selects the engine by setting its vexa user's backend.
+- Per-meeting (not per-user) engine override on POST /bots stays deferred — it
+  needs the api.v1 vN+1 upstream flagged in router.py; per-user is enough for the
+  Teams customer and A/B.
+- `stable` flag: DROPPED as a wire field. Live-engine pending drafts are
+  categorically stable (model-committed), so the platform treats completed:false
+  segments from live-engine meetings as stable BY ENGINE PROPERTY — zero contract
+  surface. (transcript.v1 segments are additionalProperties:false; a wire field
+  would have needed a fork-local re-seal for no informational gain.)
+
+### P4-original (for reference)
 No sealed-contract change (decision 2). Work items:
 - URL-shape dispatch in `createBotPipeline`/`createTranscribe` selection point.
 - Deployment defaults (Voxtral WS URL, reson8 URL/key) via profile `base_env`
@@ -256,3 +277,19 @@ Upstream knobs relevant to Teams tuning: `VEXA_HINT_MIN_COVERAGE` 0.35,
   MixedTranscriberFactory; no sealed-contract changes (URL-shape engine dispatch,
   stable via additive WS field); compose deployment; calendar → aimable-platform.
   PORTING.md rewritten to v2. Phase 0 not started.
+- 2026-08-11 (later): Phase 0 infra DONE — stock 0.12 compose stack (`vexa-v012`
+  project, gateway :18056, published v012 images) + CPU whisper unit (:8083,
+  MODEL_SIZE=small) healthy on the vexa box; meeting-api STT probe green; API key
+  minted. Smoke calls + fixtures pending (need humans in a call).
+  P1+P2+P3 DONE — `core/meetings/modules/stt-live` (`@vexa/stt-live`):
+  VoxtralTranscriber (WS + audio.cpp HTTP-live, commit cadence, audio-silence
+  boundaries, tail flush, context guard, primer + residue guards, junk filter,
+  binder naming with provisional→rename) + Reson8Transcriber (server-side
+  endpointing, interims→pending, bounded silence tail, flush-on-close) — 3
+  deterministic suites green (injected clock + transports). mixed-pipeline gained
+  a `./binder` subpath export (avoids loading pyannote/transformers).
+  P4 DONE — `liveEngineForUrl` dispatch in bot pipeline.ts (mixed lane only,
+  injected-factory-wins, transcribeEnabled gate) + live-engine.test.ts;
+  stt-live registered in architecture.calm.json + resealed; static gates green.
+  Remaining: full bot suite verify, commit, fixtures + live A/B (blocked on
+  smoke calls), platform-side work (separate repo).

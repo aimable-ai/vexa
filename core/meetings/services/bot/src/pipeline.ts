@@ -31,6 +31,7 @@ import {
   type HintKind,
 } from '@vexa/mixed-pipeline';
 import { TranscriptionClient, type TranscriptionResult } from '@vexa/transcribe-whisper';
+import { VoxtralTranscriber, Reson8Transcriber } from '@vexa/stt-live';
 import { isMixedLanePlatform, type Invocation, type Platform } from './config.js';
 import type { TranscriptSegment } from './contracts.js';
 import type { Pipeline, TranscriptSink } from './ports.js';
@@ -237,6 +238,39 @@ function createMixedBotPipeline(
   };
 }
 
+/** LIVE-engine dispatch on the SHAPE of the (sealed, already per-meeting) invocation
+ *  field transcriptionServiceUrl — no new contract field:
+ *    wss://…reson8…      → the RESON8 managed realtime service
+ *    ws(s)://…           → vLLM Voxtral realtime
+ *    http(s)://…#live    → Voxtral over audio.cpp HTTP-live (fragment strips before use)
+ *    anything else       → null (the chunked whisper lane, stock behavior)
+ *  Mixed lane only — the gmeet per-channel lane keeps its whisper path. Every live
+ *  engine's pending drafts are model-committed (stable): consumers may act on
+ *  completed:false segments from a live-engine meeting before finalization. */
+export type LiveEngine = 'voxtral' | 'reson8' | null;
+
+export function liveEngineForUrl(url: string | null | undefined): LiveEngine {
+  if (!url) return null;
+  if (/^wss?:\/\//i.test(url)) {
+    try { if (/reson8/i.test(new URL(url).host)) return 'reson8'; } catch { return null; }
+    return 'voxtral';
+  }
+  if (/^https?:\/\//i.test(url) && /#live$/i.test(url)) return 'voxtral';
+  return null;
+}
+
+const stripLiveFragment = (url: string): string => url.replace(/#live$/i, '');
+
+/** The MixedTranscriberFactory for a live engine — same callback contract as the
+ *  chunked transcriber; the engines compose the shared ClusterNameBinder internally. */
+function createLiveTranscriberFactory(engine: Exclude<LiveEngine, null>, inv: Invocation): MixedTranscriberFactory {
+  const url = stripLiveFragment(inv.transcriptionServiceUrl ?? '');
+  return (cb) => engine === 'reson8'
+    ? Reson8Transcriber.create({ url, apiKey: inv.transcriptionServiceToken ?? '' }, cb)
+    : VoxtralTranscriber.create(
+        { url, apiToken: inv.transcriptionServiceToken ?? undefined, model: inv.transcriptionModel ?? undefined }, cb);
+}
+
 /** Build the real STT transcribe closure from invocation.v1 — language baked into the call so
  *  the lane never knows about config. transcribeEnabled=false ⇒ a no-op transcribe (the engine
  *  still runs turn gating but emits empty text; recording-only meetings need no STT). */
@@ -271,9 +305,14 @@ export function createBotPipeline(
 ): BotPipeline {
   const transcribe = opts.transcribe ?? createTranscribe(inv);
   if (isMixedLanePlatform(inv.platform)) {
+    // Live-engine dispatch: a live transcription URL replaces the chunked
+    // transcriber wholesale (an injected test factory still wins).
+    const live = inv.transcribeEnabled === false ? null : liveEngineForUrl(inv.transcriptionServiceUrl);
+    const factory = opts.createMixedTranscriber
+      ?? (live ? createLiveTranscriberFactory(live, inv) : undefined);
     return createMixedBotPipeline(
       transcribe, sink, hintKindForPlatform(inv.platform),
-      inv.language ?? undefined, opts.onError, opts.createMixedTranscriber,
+      inv.language ?? undefined, opts.onError, factory,
     );
   }
   return createGmeetBotPipeline(transcribe, sink, opts.config, opts.onError);
