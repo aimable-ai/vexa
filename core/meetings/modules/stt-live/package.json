@@ -7,12 +7,17 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
-    "test": "tsx src/voxtral-transcriber.test.ts && tsx src/reson8-transcriber.test.ts && tsx src/live-transport.test.ts",
+    "test": "tsx src/voxtral-transcriber.test.ts && tsx src/reson8-transcriber.test.ts && tsx src/live-transport.test.ts && tsx src/live-speaker-streams.test.ts",
     "check:isolation": "node scripts/check-isolation.js"
   },
   "dependencies": {

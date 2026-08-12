@@ -31,7 +31,7 @@ import {
   type HintKind,
 } from '@vexa/mixed-pipeline';
 import { TranscriptionClient, type TranscriptionResult } from '@vexa/transcribe-whisper';
-import { VoxtralTranscriber, Reson8Transcriber } from '@vexa/stt-live';
+import { VoxtralTranscriber, Reson8Transcriber, LiveSpeakerStreams } from '@vexa/stt-live';
 import { isMixedLanePlatform, type Invocation, type Platform } from './config.js';
 import type { TranscriptSegment } from './contracts.js';
 import type { Pipeline, TranscriptSink } from './ports.js';
@@ -157,6 +157,49 @@ function chunkToBotSegment(speaker: string, c: ChunkSegment, completed: boolean)
     absolute_start_time: isoFromEpochSeconds(c.startMs / 1000),
     absolute_end_time: isoFromEpochSeconds(c.endMs / 1000),
     source: 'merged',
+  };
+}
+
+/** Build the gmeet (per-channel) BotPipeline over a LIVE engine: one live session per
+ *  capture channel (each channel is one speaker's clean audio), the glow name fed as
+ *  that channel's hint stream. Segments map exactly like the mixed lane's. */
+function createGmeetLiveBotPipeline(
+  engine: Exclude<LiveEngine, null>,
+  inv: Invocation,
+  sink: TranscriptSink,
+  onError?: (e: unknown) => void,
+): BotPipeline {
+  const url = stripLiveFragment(inv.transcriptionServiceUrl ?? '');
+  const publish = (channel: number, speaker: string, segs: import('@vexa/stt-live').VoxtralSegment[], completed: boolean): void => {
+    for (const c of segs) {
+      const seg: ChunkSegment = { text: c.text, startMs: c.startMs, endMs: c.endMs, language: c.language, segmentId: `ch${channel}:${c.segmentId}` };
+      void sink.publish(chunkToBotSegment(speaker, seg, completed)).catch((e) => {
+        (onError ?? ((err) => console.error(`[bot] pipeline(gmeet-live): publish rejected: ${String(err)}`)))(e);
+      });
+    }
+  };
+  const streams = new LiveSpeakerStreams(
+    {
+      engine,
+      url,
+      apiToken: inv.transcriptionServiceToken ?? undefined,
+      model: inv.transcriptionModel ?? undefined,
+    },
+    {
+      language: inv.language ?? undefined,
+      onError,
+      publish: (ch, speaker, confirmed, pending) => { publish(ch, speaker, confirmed, true); publish(ch, speaker, pending, false); },
+      publishPending: (ch, speaker, segments) => publish(ch, speaker, segments, false),
+      clearPending: () => { /* the bot's transcript.v1 egress is append-only; drafts self-replace by id */ },
+      rename: (ch, _oldSpeaker, newSpeaker, segments) => publish(ch, newSpeaker, segments, true),
+    },
+  );
+  return {
+    async start() { /* channels lazy-connect on their first frame */ },
+    async stop() { await streams.dispose(); },
+    feedAudio: (channel, glowName, pcm, tsMs) => streams.feedAudio(channel, glowName, pcm, tsMs),
+    feedMixedAudio() { /* not the gmeet lane */ },
+    recordHint() { /* gmeet names ride the frames (glow), not out-of-band hints */ },
   };
 }
 
@@ -304,16 +347,19 @@ export function createBotPipeline(
   } = {},
 ): BotPipeline {
   const transcribe = opts.transcribe ?? createTranscribe(inv);
+  // Live-engine dispatch: a live transcription URL replaces the lane's whisper
+  // machinery wholesale (an injected test factory/transcribe still wins).
+  const live = inv.transcribeEnabled === false ? null : liveEngineForUrl(inv.transcriptionServiceUrl);
   if (isMixedLanePlatform(inv.platform)) {
-    // Live-engine dispatch: a live transcription URL replaces the chunked
-    // transcriber wholesale (an injected test factory still wins).
-    const live = inv.transcribeEnabled === false ? null : liveEngineForUrl(inv.transcriptionServiceUrl);
     const factory = opts.createMixedTranscriber
       ?? (live ? createLiveTranscriberFactory(live, inv) : undefined);
     return createMixedBotPipeline(
       transcribe, sink, hintKindForPlatform(inv.platform),
       inv.language ?? undefined, opts.onError, factory,
     );
+  }
+  if (live && !opts.transcribe) {
+    return createGmeetLiveBotPipeline(live, inv, sink, opts.onError);
   }
   return createGmeetBotPipeline(transcribe, sink, opts.config, opts.onError);
 }
