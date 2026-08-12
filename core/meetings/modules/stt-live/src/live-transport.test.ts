@@ -24,3 +24,12 @@ assert.equal(parseLiveDelta('data:'), null);
 assert.equal(parseLiveDelta('plain text line'), 'plain text line');
 
 console.log('live-transport.test: OK');
+
+// withLiveQuery — audio.cpp live contract riders (model/sample_rate/channels/format)
+import { withLiveQuery } from './live-transport.js';
+assert.equal(
+  withLiveQuery('http://h:8091/v1/audio/transcriptions/live'),
+  'http://h:8091/v1/audio/transcriptions/live?model=voxtral-realtime&sample_rate=16000&channels=1&sample_format=s16le');
+assert.ok(withLiveQuery('http://h:8091/live?model=custom').includes('model=custom'), 'explicit model preserved');
+assert.equal(withLiveQuery('http://h:8091/live', 'my-model').includes('model=my-model'), true);
+console.log('withLiveQuery: OK');

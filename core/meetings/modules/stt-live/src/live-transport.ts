@@ -121,13 +121,29 @@ class WsTransport implements LiveTransport {
   }
 }
 
+/** audio.cpp's live endpoint requires the stream contract in the query string;
+ *  fill any missing key so a bare backend URL still speaks it correctly. */
+export function withLiveQuery(rawUrl: string, model?: string): string {
+  const url = new URL(rawUrl);
+  const defaults: Record<string, string> = {
+    model: model || 'voxtral-realtime',
+    sample_rate: '16000',
+    channels: '1',
+    sample_format: 's16le',
+  };
+  for (const [k, v] of Object.entries(defaults)) {
+    if (!url.searchParams.has(k)) url.searchParams.set(k, v);
+  }
+  return url.toString();
+}
+
 class HttpLiveTransport implements LiveTransport {
   ready = false;
   private req: ReturnType<typeof httpRequest>;
   private closed = false;
 
   constructor(cfg: LiveTransportConfig, private ev: LiveTransportEvents) {
-    const url = new URL(cfg.url);
+    const url = new URL(withLiveQuery(cfg.url, cfg.model));
     const req = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, {
       method: 'POST',
       headers: {
