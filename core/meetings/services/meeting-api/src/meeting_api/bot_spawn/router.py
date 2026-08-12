@@ -55,6 +55,21 @@ NATIVE_MEETING_ID_URL_CHARS = "?#&=/"
 
 
 
+def _validated_stt_url(value: Optional[object]) -> Optional[str]:
+    """Per-request STT override URL: ws(s):// (live engines) or http(s)://
+    (batch). Anything else is a 422 at the door — a bad scheme would otherwise
+    surface as a mid-meeting transport error."""
+    if value is None or value == "":
+        return None
+    url = str(value).strip()
+    if not url.lower().startswith(("ws://", "wss://", "http://", "https://")) or len(url) > 512:
+        raise HTTPException(
+            status_code=422,
+            detail="transcription_service_url must be a ws(s):// or http(s):// URL (max 512 chars)",
+        )
+    return url
+
+
 def _resolve_recording_enabled(value: Optional[object]) -> bool:
     """Recording default: an explicit request value wins; else the ``RECORDING_ENABLED`` env
     (default ``true``), so a dashboard bot records by default. The request value is type-validated —
@@ -407,6 +422,12 @@ def build_router(
                 # has no additionalProperties:false), so the wire is not rejected; documenting it as
                 # a public typed field needs a vN+1 (lane:contract) — see the bot_spawn README.
                 continue_meeting=bool(body.get("continue_meeting", False)),
+                # Same P3c pattern (AIM-1507/AIM-1377): per-request STT backend override into the
+                # sealed invocation's existing transcriptionServiceUrl/Token/Model fields. The URL
+                # shape selects the engine bot-side (ws(s):// live engines, http(s):// batch).
+                transcription_service_url_override=_validated_stt_url(body.get("transcription_service_url")),
+                transcription_service_token_override=body.get("transcription_service_token"),
+                transcription_model_override=body.get("transcription_model"),
                 max_concurrent=max_concurrent,
                 webhook_url=x_user_webhook_url,
                 webhook_secret=x_user_webhook_secret,

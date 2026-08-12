@@ -162,6 +162,14 @@ async def request_bot(
     transcribe_enabled: bool = True,
     automatic_leave: Optional[dict] = None,
     continue_meeting: bool = False,
+    # P3c-style open-body fields (AIM-1507/AIM-1377): a per-request STT backend override.
+    # Rides the OPEN api.v1 request body into the SEALED invocation.v1 fields that already
+    # exist (transcriptionServiceUrl/Token/Model) — no contract change. Precedence: above
+    # both the env backend and the Settings-configured one; token/model replace WHOLESALE
+    # (a request-supplied endpoint never inherits the deployment token).
+    transcription_service_url_override: Optional[str] = None,
+    transcription_service_token_override: Optional[str] = None,
+    transcription_model_override: Optional[str] = None,
     max_concurrent: Optional[int] = None,
     redis_url: Optional[str] = None,
     meeting_api_url: Optional[str] = None,
@@ -219,6 +227,14 @@ async def request_bot(
         # however, is not inferred from its URL: mixed-version identity may return a customer URL
         # without provenance, and guessing there could turn an unknown service into a Vexa charge.
         transcription_provider = "vexa"
+    if transcription_service_url_override:
+        # Per-request override outranks both resolutions. Wholesale replacement
+        # (same rule as a configured backend): its token/model are its own.
+        transcription_service_url = transcription_service_url_override
+        transcription_service_token = transcription_service_token_override or None
+        transcription_model = transcription_model_override or None
+        if transcribe_enabled:
+            transcription_provider = "customer"
     if transcribe_enabled and not transcription_service_url:
         raise TranscriptionNotConfigured(
             "no transcription backend configured — set it in Settings or environment variables "
@@ -235,7 +251,8 @@ async def request_bot(
     #         client retries; a wrong URL never heals by itself. Only the latter is ours to refuse;
     #       * the ENV backend only — the verdict describes that endpoint, so a Settings-configured
     #         backend (a different endpoint) must never be blocked by the env one's health.
-    if transcribe_enabled and not configured.get("url"):
+    if transcribe_enabled and not configured.get("url") and not transcription_service_url_override:
+        # (An override is a different endpoint — the ENV verdict does not describe it.)
         verdict = cached_probe_verdict("stt", max_age_s=_STT_VERDICT_MAX_AGE_S)
         if verdict is not None and verdict.get("kind") in CONFIG_FAULT_KINDS:
             log_event(
