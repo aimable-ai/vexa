@@ -124,6 +124,23 @@ await streams2.dispose();
   st.recordTransport({ csrc: 42, active: true, tMs: T, channel: 1 });
   st.recordTransport({ csrc: 659646442, active: true, tMs: T, channel: 1 });
   assert.equal((st as any).csrcs.get(42).ambient, true, 'a source audible on two slots at once is ambient');
+  // The lockstep variant (third tape 5ddcf092): 42 toggles per slot WITH the speaker, never open on
+  // two slots at once — it is still the marker because it co-occurs with two different sources.
+  {
+    const st2 = new LiveSpeakerStreams({ engine: 'voxtral', url: 'ws://mock' }, { publish: () => {}, publishPending: () => {}, clearPending: () => {}, rename: () => {} });
+    let U = 5_000_000_000_000;
+    st2.recordTransport({ csrc: 42, active: true, tMs: U, channel: 0 });
+    st2.recordTransport({ csrc: 111, active: true, tMs: U, channel: 0 });
+    st2.recordTransport({ csrc: 42, active: false, tMs: U + 3000, channel: 0 });
+    st2.recordTransport({ csrc: 111, active: false, tMs: U + 3000, channel: 0 });
+    assert.equal((st2 as any).csrcs.get(42).ambient, false, 'one companion is not enough (could be the person)');
+    st2.recordTransport({ csrc: 222, active: true, tMs: U + 4000, channel: 1 });
+    st2.recordTransport({ csrc: 42, active: true, tMs: U + 4000, channel: 1 });
+    assert.equal((st2 as any).csrcs.get(42).ambient, true, 'co-audible with two different sources ⇒ ambient');
+    assert.equal((st2 as any).csrcs.get(111).ambient, false); assert.equal((st2 as any).csrcs.get(222).ambient, false);
+    const gg = (st2 as any).attribute(1, 'X', [seg('z', 'tail', U + 4000, U + 4001)], false);
+    assert.equal(gg[0].segments[0].speakerKey, 'csrc:222', 'a 1 ms tail split still keys to the participant, never the marker');
+  }
   for (let i = 0; i < 12; i++) st.feedAudio(1, 'Ludger Visser', pcm(256), T + i * 256);
   const g1 = (st as any).attribute(1, 'Ludger Visser', [seg('b', 'hallo vanaf telefoon', T, T + 3000)], true);
   assert.equal(g1[0].segments[0].speakerKey, 'csrc:659646442', 'ch1 is owned by the phone CSRC');

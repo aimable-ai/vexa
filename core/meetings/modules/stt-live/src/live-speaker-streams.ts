@@ -68,8 +68,11 @@ interface CsrcState {
   support: Map<string, number>;
   /** Bound name once the evidence clears the bars. */
   name?: string;
-  /** Audible on two channels at once at any point ⇒ an ambient marker, not a person. */
+  /** An ambient marker, not a person: audible on two channels at once, OR co-audible on one
+   *  channel with two DIFFERENT other sources (Meet stamps a constant beside every participant). */
   ambient: boolean;
+  /** Other sources this one has been co-audible with on the same channel. */
+  companions: Set<number>;
   /** Confirmed rows already published under this source, for the late-name repaint. */
   published: Array<{ channel: number; speaker: string; seg: import('./voxtral-transcriber.js').VoxtralSegment }>;
 }
@@ -149,6 +152,16 @@ export class LiveSpeakerStreams {
           if (ch !== ev.channel && ivs.length && ivs[ivs.length - 1].end === null) { st.ambient = true; break; }
         }
       }
+      // Co-audible sources on this channel: each becomes the other's companion; a source with two
+      // different companions is the marker, not a person (a person's only companion is the marker).
+      for (const [other, ost] of this.csrcs) {
+        if (other === ev.csrc) continue;
+        const oivs = ost.onChannel.get(ev.channel);
+        if (!oivs?.length || oivs[oivs.length - 1].end !== null) continue;
+        st.companions.add(other); ost.companions.add(ev.csrc);
+        if (st.companions.size >= 2) st.ambient = true;
+        if (ost.companions.size >= 2) ost.ambient = true;
+      }
       list.push({ start: ev.tMs, end: null });
     } else if (open && open.end === null) {
       open.end = ev.tMs;
@@ -158,7 +171,7 @@ export class LiveSpeakerStreams {
 
   private csrcState(csrc: number): CsrcState {
     let st = this.csrcs.get(csrc);
-    if (!st) { st = { onChannel: new Map(), support: new Map(), ambient: false, published: [] }; this.csrcs.set(csrc, st); }
+    if (!st) { st = { onChannel: new Map(), support: new Map(), ambient: false, companions: new Set(), published: [] }; this.csrcs.set(csrc, st); }
     return st;
   }
 
