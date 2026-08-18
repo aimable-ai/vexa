@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -35,6 +36,35 @@ def _demux_docker_log(raw: bytes) -> bytes:
         out += raw[i + 8:i + 8 + size]
         i += 8 + size
     return bytes(out) if i == n else raw
+
+
+def _demux_docker_stream(raw):
+    """Streaming twin of ``_demux_docker_log``: yield payloads frame by frame from a follow=1 log
+    response (frames may straddle read boundaries). Falls back to pass-through the moment the
+    bytes stop parsing as frames (TTY container)."""
+    buf = bytearray()
+    framed = True
+    while True:
+        chunk = raw.read(4096)
+        if not chunk:
+            break
+        if not framed:
+            yield chunk
+            continue
+        buf += chunk
+        while len(buf) >= 8:
+            if buf[0] not in (0, 1, 2) or buf[1:4] != b"\x00\x00\x00":
+                framed = False
+                yield bytes(buf)
+                buf.clear()
+                break
+            size = int.from_bytes(buf[4:8], "big")
+            if len(buf) < 8 + size:
+                break
+            yield bytes(buf[8:8 + size])
+            del buf[:8 + size]
+    if buf:
+        yield bytes(buf)
 from .mounts import workspace_binds
 from .profiles import Runnable
 
@@ -133,6 +163,7 @@ class DockerBackend:
 
     def __init__(self, name_prefix: str = "vexa-") -> None:
         self._prefix = name_prefix
+        self._following: set[str] = set()
         self._url = _socket_url()
         self._session = requests_unixsocket.Session()
 
@@ -286,6 +317,7 @@ class DockerBackend:
         s = self._req("POST", f"/containers/{cid}/start")
         if s.status_code not in (204, 304):
             raise RuntimeError(f"docker start {name} failed ({s.status_code}): {s.text.strip()}")
+        self._follow_logs(name)
         return WorkloadHandle(id=workload_id, impl=name)
 
     def find(self, workload_id: str) -> Optional[WorkloadHandle]:
@@ -303,6 +335,7 @@ class DockerBackend:
             return None
         if not _in_stack_network(_stack_network(), r.json() or {}):
             return None  # exists, but it is ANOTHER stack's container — not ours to touch
+        self._follow_logs(name)
         return WorkloadHandle(id=workload_id, impl=name)
 
     def list_workload_containers(self) -> list[dict]:
@@ -388,27 +421,35 @@ class DockerBackend:
     def kill(self, h: WorkloadHandle) -> None:
         self._req("POST", f"/containers/{h._impl}/kill")  # type: ignore[attr-defined]
 
-    def _persist_logs(self, cid: str) -> None:
-        """Copy the workload's stdout/stderr to ``VEXA_WORKLOAD_LOG_DIR/<container-name>.log`` before the
-        container (and with it `docker logs`) is removed. A bot's own log lines are the diagnosis of a
-        bad transcript; without this they die with the workload. Best-effort: never blocks reclaim."""
+    def _follow_logs(self, name: str) -> None:
+        """Stream the workload's stdout/stderr to ``VEXA_WORKLOAD_LOG_DIR/<name>.log`` from START,
+        in a daemon thread, until the container dies. A bot's own log lines are the diagnosis of a
+        bad transcript; pulling them at reclaim time is too late on a SHARED daemon — another
+        stack's reaper can remove an exited container within the same second as ``die``, before
+        this kernel ever observes the exit. Following from the first line makes removal timing
+        irrelevant. Best-effort: never blocks start, never raises."""
         log_dir = os.getenv("VEXA_WORKLOAD_LOG_DIR")
-        if not log_dir:
+        if not log_dir or name in self._following:
             return
-        try:
-            info = self._req("GET", f"/containers/{cid}/json")
-            name = (info.json().get("Name") or cid).lstrip("/") if info.status_code == 200 else cid
-            r = self._req("GET", f"/containers/{cid}/logs?stdout=1&stderr=1&timestamps=1", timeout=60)
-            if r.status_code != 200:
-                return
-            os.makedirs(log_dir, exist_ok=True)
-            with open(os.path.join(log_dir, f"{name}.log"), "wb") as f:
-                f.write(_demux_docker_log(r.content))
-        except Exception as e:  # noqa: BLE001 — diagnostics must never fail reclaim
-            logger.warning("workload log persist failed for %s: %s", cid, e)
+        self._following.add(name)
+
+        def run() -> None:
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                r = self._req("GET", f"/containers/{name}/logs?stdout=1&stderr=1&timestamps=1&follow=1",
+                              timeout=(30, None), stream=True)
+                if r.status_code != 200:
+                    return
+                with open(os.path.join(log_dir, f"{name}.log"), "ab") as f:
+                    for chunk in _demux_docker_stream(r.raw):
+                        f.write(chunk)
+                        f.flush()
+            except Exception as e:  # noqa: BLE001 — diagnostics must never disturb the workload
+                logger.warning("workload log follow ended for %s: %s", name, e)
+
+        threading.Thread(target=run, name=f"log-follow-{name}", daemon=True).start()
 
     def cleanup(self, h: WorkloadHandle) -> None:
-        self._persist_logs(h._impl)  # type: ignore[attr-defined]
         # Reclaim MUST be truthful: a failed force-delete while the container may still be running
         # would let `destroy` report `destroyed` over a live bot. 404 = already gone (fine).
         r = self._req("DELETE", f"/containers/{h._impl}?force=true")  # type: ignore[attr-defined]
