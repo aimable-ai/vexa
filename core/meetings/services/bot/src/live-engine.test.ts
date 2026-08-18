@@ -68,11 +68,11 @@ const baseInv = {
   await p.stop();
 }
 
-// The chunked whisper lane never marks drafts stable.
+// The chunked whisper lane (Zoom/Jitsi legacy mixed lane; Teams now rides its CSRC lane) never marks drafts stable.
 {
   const got: Array<{ completed: boolean; stable?: boolean }> = [];
   const capture: TranscriptSink = { publish: async (seg) => { got.push({ completed: seg.completed, stable: seg.stable }); } };
-  const p = createBotPipeline({ ...baseInv, transcriptionServiceUrl: 'http://transcription:8083' } as Invocation, capture, {
+  const p = createBotPipeline({ ...baseInv, platform: 'zoom', transcriptionServiceUrl: 'http://transcription:8083' } as Invocation, capture, {
     createMixedTranscriber: async (cb) => {
       cb.publishPending('Ludger', [{ text: 'Go', startMs: 1_000_000, endMs: 1_000_500, language: 'nl', segmentId: 's1' }]);
       return { feedAudio: () => {}, recordHint: () => {}, dispose: async () => {} };

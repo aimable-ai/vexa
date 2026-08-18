@@ -27,7 +27,7 @@ def _segment_to_api(seg: dict) -> dict:
         "text": seg.get("text", ""),
         "language": seg.get("language"),
     }
-    for k in ("speaker", "completed", "segment_id", "source", "absolute_start_time", "absolute_end_time"):
+    for k in ("speaker", "speaker_key", "completed", "segment_id", "source", "absolute_start_time", "absolute_end_time"):
         if seg.get(k) is not None:
             out[k] = seg[k]
     return out
@@ -118,7 +118,10 @@ class InMemoryTranscriptStore:
     async def _transcript_doc(self, mid) -> dict:
         """Build the api.v1 ``TranscriptionResponse`` for row ``mid`` — shared by ``get_transcript``
         (native → newest) and ``get_transcript_by_id`` (exact row). Keyed by the row id ``mid``, so a
-        by-id read returns exactly that row's segments/notes."""
+        by-id read returns exactly that row's segments/notes. Mirrors the real store's response
+        projection of the calendar sources."""
+        from .projection import project_calendar_sources
+
         m = self._meetings[mid]
         by_id = dict(m["segments"])
         # Redis-wired (prod-topology) mode: merge the LIVE in-flight hash over the durable rows,
@@ -144,7 +147,7 @@ class InMemoryTranscriptStore:
             "end_time": m["end_time"],
             "recordings": m["data"].get("recordings", []),
             "notes": m["data"].get("notes"),
-            "data": m["data"],
+            "data": project_calendar_sources(m["data"]),
             "segments": [_segment_to_api(s) for s in segments],
         }
 
@@ -375,7 +378,10 @@ class InMemoryTranscriptStore:
     async def create_planned_meeting(self, user_id, *, platform, native_meeting_id,
                                      title=None, scheduled_at=None, meeting_url=None,
                                      workspace_id=None, auto_join=True, calendar_uid=None,
-                                     workspace_source=None, attendees=None, spawn=None):
+                                     calendar_source=None,
+                                     workspace_source=None, attendees=None,
+                                     auto_join_last_attempt=None,
+                                     auto_join_error=None, spawn=None):
         if self._dup_non_terminal(user_id, platform, native_meeting_id):
             return {"error": "duplicate"}
         data: dict = {"auto_join": bool(auto_join)}
@@ -391,8 +397,17 @@ class InMemoryTranscriptStore:
                 data["workspace_source"] = workspace_source
         if calendar_uid:
             data["calendar_uid"] = calendar_uid
+        if calendar_source:
+            data["calendar_sources"] = [dict(calendar_source)]
+            data["calendar_connection_id"] = calendar_source["id"]
+            data["calendar_name"] = calendar_source.get("name") or "Calendar"
+            data["calendar_managed"] = True
         if attendees:
             data["attendees"] = attendees
+        if auto_join_last_attempt:
+            data["auto_join_last_attempt"] = auto_join_last_attempt
+        if auto_join_error:
+            data["auto_join_error"] = auto_join_error
         if spawn:
             data["spawn"] = spawn
         mid = self.seed_meeting(
@@ -401,6 +416,22 @@ class InMemoryTranscriptStore:
             start_time=None, data=data, constructed_meeting_url=meeting_url,
         )
         return self._planned_row(mid)
+
+    async def attach_calendar_source(self, user_id, meeting_id, *, calendar_uid,
+                                     calendar_sources=None):
+        """Identity-only stamp on a row in ANY status — mirrors the adapter (live-row adoption)."""
+        m = self._meetings.get(meeting_id)
+        if m is None or m["user_id"] != user_id:
+            return None
+        data = m["data"]
+        if calendar_uid:
+            data["calendar_uid"] = calendar_uid
+        if calendar_sources:
+            data["calendar_sources"] = [dict(s) for s in calendar_sources]
+            primary = calendar_sources[0]
+            data["calendar_connection_id"] = primary.get("id")
+            data["calendar_name"] = primary.get("name") or "Calendar"
+        return self._planned_row(meeting_id)
 
     async def update_planned_meeting(self, user_id, meeting_id, updates):
         m = self._meetings.get(meeting_id)
@@ -454,6 +485,11 @@ class InMemoryTranscriptStore:
                 data.pop("attendees", None)
         if "auto_join" in updates:
             data["auto_join"] = bool(updates["auto_join"])
+        if "auto_join_user_set" in updates:
+            if updates["auto_join_user_set"]:
+                data["auto_join_user_set"] = True
+            else:
+                data.pop("auto_join_user_set", None)
         if "spawn" in updates:
             if updates["spawn"]:
                 data["spawn"] = updates["spawn"]
@@ -464,6 +500,19 @@ class InMemoryTranscriptStore:
                 data["calendar_uid"] = updates["calendar_uid"]
             else:
                 data.pop("calendar_uid", None)
+        if "calendar_sources" in updates:
+            if updates["calendar_sources"]:
+                data["calendar_sources"] = updates["calendar_sources"]
+            else:
+                data.pop("calendar_sources", None)
+        for key in ("calendar_connection_id", "calendar_name"):
+            if key in updates:
+                if updates[key]:
+                    data[key] = updates[key]
+                else:
+                    data.pop(key, None)
+        if "calendar_managed" in updates:
+            data["calendar_managed"] = bool(updates["calendar_managed"])
         return self._planned_row(meeting_id)
 
     async def delete_planned_meeting(self, user_id, meeting_id):
@@ -502,6 +551,19 @@ class InMemoryTranscriptStore:
             )
             return
         self._row_or_placeholder(meeting_id)["segments"][segment["segment_id"]] = segment
+
+    async def delete_segments(self, meeting_id, segment_ids) -> None:
+        ids = [str(s) for s in (segment_ids or []) if s]
+        if not ids:
+            return
+        if self._redis is not None:
+            from .db_writer import segments_hash_key
+
+            await self._redis.hdel(segments_hash_key(meeting_id), *ids)
+            return
+        segs = self._row_or_placeholder(meeting_id)["segments"]
+        for sid in ids:
+            segs.pop(sid, None)
 
     async def upsert_segments(self, meeting_id, segments) -> None:
         """The db-writer's durable sink (the dict stands in for the ``transcriptions`` table):

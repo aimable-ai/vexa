@@ -226,7 +226,7 @@ def _segment_to_api(seg: dict) -> dict:
         "text": seg.get("text", ""),
         "language": seg.get("language"),
     }
-    for k in ("speaker", "completed", "segment_id", "source", "absolute_start_time", "absolute_end_time", "created_at"):
+    for k in ("speaker", "speaker_key", "completed", "segment_id", "source", "absolute_start_time", "absolute_end_time", "created_at"):
         if seg.get(k) is not None:
             out[k] = seg[k]
     return out
@@ -328,7 +328,13 @@ class SqlAlchemyTranscriptStore:
         """POST-SESSION half: merge the LIVE Redis in-flight hash, sort, derive absolute times, and
         assemble the api.v1 ``TranscriptionResponse`` dict. NO database session is open here — this
         is where the (possibly slow) Redis await happens, so it can never pin a pooled connection or
-        hold a snapshot/transaction open (the #508 fix). Response is byte-identical to the old build."""
+        hold a snapshot/transaction open (the #508 fix).
+
+        This is a RESPONSE edge, so the calendar sources it ships are projected to their identity +
+        policy keys (``project_calendar_sources``) — the raw ICS event snapshot is sweep state, not
+        anyone's transcript."""
+        from .projection import project_calendar_sources
+
         snap, seg_by_id, order = pg
         data = snap["data"]
         # Merge the LIVE Redis hash of in-flight segments (``meeting:{id}:segments``) — the source
@@ -364,7 +370,7 @@ class SqlAlchemyTranscriptStore:
             "end_time": _iso_utc(snap["end_time"]),
             "recordings": data.get("recordings", []),
             "notes": data.get("notes"),
-            "data": data,
+            "data": project_calendar_sources(data),
             "segments": segments,
         }
 
@@ -692,6 +698,31 @@ class SqlAlchemyTranscriptStore:
             pipe.expire(hash_key, ttl)
             await pipe.execute()
 
+    async def delete_segments(self, meeting_id, segment_ids) -> None:
+        # Retraction: withdraw superseded/over-extended pending drafts by segment id. Two legs mirror the
+        # append path — HDEL the live hash so an UN-flushed draft never reaches Postgres, and DELETE any
+        # rows the db-writer already flushed. Keyed on (meeting_id, segment_id). Idempotent.
+        ids = [str(s) for s in (segment_ids or []) if s]
+        if not ids:
+            return
+        # Leg 1: drop from the redis flush hash (before the db-writer persists an un-flushed draft).
+        if self._redis is not None:
+            from .db_writer import segments_hash_key
+            try:
+                await self._redis.hdel(segments_hash_key(meeting_id), *ids)
+            except Exception:  # noqa: BLE001 — best-effort; the DB delete is the durable backstop
+                pass
+        # Leg 2: delete any already-flushed rows.
+        from sqlalchemy import bindparam
+        from sqlalchemy import text as sql_text
+
+        stmt = sql_text(
+            "DELETE FROM transcriptions WHERE meeting_id = :mid AND segment_id IN :sids"
+        ).bindparams(bindparam("sids", expanding=True))
+        async with self._session_factory() as db:
+            await db.execute(stmt, {"mid": int(meeting_id), "sids": ids})
+            await db.commit()
+
     async def upsert_segments(self, meeting_id, segments) -> None:
         """The db-writer's durable sink — UPSERT a batch of flushed segments into ``transcriptions``
         on the segment identity ``(meeting_id, segment_id)`` (the partial unique index
@@ -890,10 +921,18 @@ class SqlAlchemyTranscriptStore:
     async def create_planned_meeting(self, user_id, *, platform, native_meeting_id,
                                      title=None, scheduled_at=None, meeting_url=None,
                                      workspace_id=None, auto_join=True, calendar_uid=None,
-                                     workspace_source=None, attendees=None, spawn=None) -> dict:
+                                     calendar_source=None,
+                                     workspace_source=None, attendees=None,
+                                     auto_join_last_attempt=None,
+                                     auto_join_error=None, spawn=None) -> dict:
         """Insert a PLANNED row (intent status, no bot). Takes the SAME per-user advisory lock as
         ``bot_spawn.create_meeting_guarded`` so planned-create serializes with concurrent spawns
-        and calendar sync; the unique partial index remains the DB-level backstop (→ duplicate)."""
+        and calendar sync; the unique partial index remains the DB-level backstop (→ duplicate).
+
+        ``auto_join_last_attempt``/``auto_join_error`` seed the row with a backoff already earned
+        elsewhere — calendar sync passes them when this row replaces a terminal one the auto-join
+        sweep already dispatched for, so the replacement is not due the instant it exists. Written
+        in the INSERT, not patched after, so no sweep tick can see the row without them."""
         from sqlalchemy import bindparam, select, text
         from sqlalchemy.exc import IntegrityError
 
@@ -912,8 +951,17 @@ class SqlAlchemyTranscriptStore:
                 data["workspace_source"] = workspace_source
         if calendar_uid:
             data["calendar_uid"] = calendar_uid
+        if calendar_source:
+            data["calendar_sources"] = [dict(calendar_source)]
+            data["calendar_connection_id"] = calendar_source["id"]
+            data["calendar_name"] = calendar_source.get("name") or "Calendar"
+            data["calendar_managed"] = True
         if attendees:
             data["attendees"] = attendees
+        if auto_join_last_attempt:
+            data["auto_join_last_attempt"] = auto_join_last_attempt
+        if auto_join_error:
+            data["auto_join_error"] = auto_join_error
         if spawn:
             data["spawn"] = spawn
         status = "scheduled" if scheduled_at else "idle"
@@ -945,6 +993,44 @@ class SqlAlchemyTranscriptStore:
                 return {"error": "duplicate"}
             await db.refresh(m)
             return self._planned_row(m)
+
+    async def attach_calendar_source(self, user_id, meeting_id, *, calendar_uid,
+                                     calendar_sources=None) -> "Optional[dict]":
+        """Stamp calendar IDENTITY onto a row in ANY status (the live-row adoption path).
+
+        Deliberately narrower than ``update_planned_meeting``, which refuses an FSM-owned row: an
+        imported event whose meeting is already live must attach to THAT row rather than create a
+        sibling the auto-join sweep would send a second bot for. Identity keys only — status,
+        ``auto_join``, ``auto_join_user_set``, ``calendar_managed`` and ``scheduled_at`` are never
+        written here, so adopting a live row can never re-arm or re-dispatch it."""
+        from sqlalchemy import bindparam, select, text
+        from sqlalchemy.orm.attributes import flag_modified
+
+        from .models import Meeting
+
+        async with self._session_factory() as db:
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(:uid)").bindparams(bindparam("uid", user_id))
+            )
+            meeting = (await db.execute(
+                select(Meeting).where(Meeting.id == meeting_id, Meeting.user_id == user_id)
+                .with_for_update()
+            )).scalars().first()
+            if meeting is None:
+                return None
+            data = dict(meeting.data) if isinstance(meeting.data, dict) else {}
+            if calendar_uid:
+                data["calendar_uid"] = calendar_uid
+            if calendar_sources:
+                data["calendar_sources"] = [dict(s) for s in calendar_sources]
+                primary = calendar_sources[0]
+                data["calendar_connection_id"] = primary.get("id")
+                data["calendar_name"] = primary.get("name") or "Calendar"
+            meeting.data = data
+            flag_modified(meeting, "data")
+            await db.commit()
+            await db.refresh(meeting)
+            return self._planned_row(meeting)
 
     async def update_planned_meeting(self, user_id, meeting_id, updates) -> "Optional[dict]":
         """ROW-id-addressed PATCH of a planned row (intent status only). ``updates`` carries only
@@ -1022,6 +1108,13 @@ class SqlAlchemyTranscriptStore:
                     data.pop("attendees", None)
             if "auto_join" in updates:
                 data["auto_join"] = bool(updates["auto_join"])
+            # The USER's own auto-join choice, marked so calendar sync stops deriving the flag
+            # from the connected calendars' policy for this row.
+            if "auto_join_user_set" in updates:
+                if updates["auto_join_user_set"]:
+                    data["auto_join_user_set"] = True
+                else:
+                    data.pop("auto_join_user_set", None)
             if "spawn" in updates:
                 if updates["spawn"]:
                     data["spawn"] = updates["spawn"]
@@ -1032,6 +1125,19 @@ class SqlAlchemyTranscriptStore:
                     data["calendar_uid"] = updates["calendar_uid"]
                 else:
                     data.pop("calendar_uid", None)
+            if "calendar_sources" in updates:
+                if updates["calendar_sources"]:
+                    data["calendar_sources"] = updates["calendar_sources"]
+                else:
+                    data.pop("calendar_sources", None)
+            for key in ("calendar_connection_id", "calendar_name"):
+                if key in updates:
+                    if updates[key]:
+                        data[key] = updates[key]
+                    else:
+                        data.pop(key, None)
+            if "calendar_managed" in updates:
+                data["calendar_managed"] = bool(updates["calendar_managed"])
 
             meeting.data = data
             flag_modified(meeting, "data")
