@@ -245,3 +245,35 @@ def test_find_meeting_link_in_free_text():
     assert find_meeting_link(text) == ("google_meet", "abc-defg-hij",
                                        "https://meet.google.com/abc-defg-hij")
     assert find_meeting_link("no links here") is None
+
+
+# ---- spawn options (fork, AIM-1467): planner-pinned per-meeting spawn args -----------
+
+def test_create_with_spawn_options_stores_them():
+    client, store, redis = _client()
+    spawn = {"language": "nl", "bot_name": "Aimable", "initial_prompt": "Bolsius, Roundtable",
+             "transcription_service_url": "http://voxtral:8091/v1/audio/transcriptions/live",
+             "transcription_service_token": "t", "recording_enabled": False}
+    r = client.post("/meetings", json={"scheduled_at": AT, "meeting_url": URL, "spawn": spawn}, headers=H)
+    assert r.status_code == 201, r.text
+    assert r.json()["data"]["spawn"] == spawn
+
+
+def test_spawn_rejects_unknown_and_wrong_types():
+    client, store, redis = _client()
+    r = client.post("/meetings", json={"scheduled_at": AT, "meeting_url": URL, "spawn": {"foo": "x"}}, headers=H)
+    assert r.status_code == 422
+    r = client.post("/meetings", json={"scheduled_at": AT, "meeting_url": URL, "spawn": {"recording_enabled": "no"}}, headers=H)
+    assert r.status_code == 422
+    r = client.post("/meetings", json={"scheduled_at": AT, "meeting_url": URL, "spawn": {"language": None, "bot_name": " "}}, headers=H)
+    assert r.status_code == 201 and "spawn" not in r.json()["data"]
+
+
+def test_patch_spawn_replaces_and_null_clears():
+    client, store, redis = _client()
+    mid = client.post("/meetings", json={"scheduled_at": AT, "meeting_url": URL,
+                                          "spawn": {"language": "nl"}}, headers=H).json()["id"]
+    r = client.patch(f"/meetings/{mid}", json={"spawn": {"language": "en", "bot_name": "B"}}, headers=H)
+    assert r.status_code == 200 and r.json()["data"]["spawn"] == {"language": "en", "bot_name": "B"}
+    r = client.patch(f"/meetings/{mid}", json={"spawn": None}, headers=H)
+    assert r.status_code == 200 and "spawn" not in r.json()["data"]

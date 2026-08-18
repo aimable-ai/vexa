@@ -51,9 +51,15 @@ export interface LiveSpeakerStreamsCallbacks extends Omit<VoxtralTranscriberCall
 /** The glow is the gmeet lane's native hint stream — page-side, per frame. */
 const GLOW_HINT_KIND: HintKind = 'dom-active';
 
+/** A glow that stays away this long ends its hint turn (frames are ~256 ms apart). */
+const GLOW_END_GAP_MS = 700;
+
+interface GlowState { name: string; lastMs: number }
+
 export class LiveSpeakerStreams {
   private channels = new Map<number, ChannelEngine>();
   private creating = new Map<number, Promise<ChannelEngine>>();
+  private glow = new Map<number, GlowState>();
   private disposed = false;
 
   constructor(private cfg: LiveSpeakerStreamsConfig, private cb: LiveSpeakerStreamsCallbacks) {}
@@ -61,17 +67,37 @@ export class LiveSpeakerStreams {
   /** One gmeet capture frame: channel index + optional glow name. */
   feedAudio(channel: number, glowName: string | undefined, pcm: Float32Array, tsMs: number): void {
     if (this.disposed) return;
+    const hints = this.glowHints(channel, glowName, tsMs);
     const engine = this.channels.get(channel);
     if (engine) {
       engine.feedAudio(pcm, tsMs);
-      if (glowName) engine.recordHint(glowName, GLOW_HINT_KIND, tsMs);
+      for (const h of hints) engine.recordHint(h.name, GLOW_HINT_KIND, h.tMs, h.isEnd);
       return;
     }
     void this.ensure(channel).then((e) => {
       if (this.disposed) return;
       e.feedAudio(pcm, tsMs);
-      if (glowName) e.recordHint(glowName, GLOW_HINT_KIND, tsMs);
+      for (const h of hints) e.recordHint(h.name, GLOW_HINT_KIND, h.tMs, h.isEnd);
     });
+  }
+
+  /** The glow rides EVERY frame; a same-name hint per frame EXTENDS the binder's open turn.
+   *  What the frames never carry is an END — so emit one when the glow switches to another
+   *  name or stays away longer than GLOW_END_GAP_MS, instead of leaving the turn to the
+   *  binder's open-turn grace. */
+  private glowHints(channel: number, glowName: string | undefined, tsMs: number): Array<{ name: string; tMs: number; isEnd?: boolean }> {
+    const cur = this.glow.get(channel);
+    const out: Array<{ name: string; tMs: number; isEnd?: boolean }> = [];
+    if (cur && glowName !== cur.name && (glowName || tsMs - cur.lastMs > GLOW_END_GAP_MS)) {
+      out.push({ name: cur.name, tMs: cur.lastMs, isEnd: true });
+      this.glow.delete(channel);
+    }
+    if (glowName) {
+      const same = this.glow.get(channel);
+      if (same) same.lastMs = tsMs; else this.glow.set(channel, { name: glowName, lastMs: tsMs });
+      out.push({ name: glowName, tMs: tsMs });
+    }
+    return out;
   }
 
   async dispose(): Promise<void> {

@@ -375,7 +375,7 @@ class InMemoryTranscriptStore:
     async def create_planned_meeting(self, user_id, *, platform, native_meeting_id,
                                      title=None, scheduled_at=None, meeting_url=None,
                                      workspace_id=None, auto_join=True, calendar_uid=None,
-                                     workspace_source=None, attendees=None):
+                                     workspace_source=None, attendees=None, spawn=None):
         if self._dup_non_terminal(user_id, platform, native_meeting_id):
             return {"error": "duplicate"}
         data: dict = {"auto_join": bool(auto_join)}
@@ -393,6 +393,8 @@ class InMemoryTranscriptStore:
             data["calendar_uid"] = calendar_uid
         if attendees:
             data["attendees"] = attendees
+        if spawn:
+            data["spawn"] = spawn
         mid = self.seed_meeting(
             user_id=user_id, platform=platform, native_meeting_id=native_meeting_id,
             status="scheduled" if scheduled_at else "idle",
@@ -452,6 +454,11 @@ class InMemoryTranscriptStore:
                 data.pop("attendees", None)
         if "auto_join" in updates:
             data["auto_join"] = bool(updates["auto_join"])
+        if "spawn" in updates:
+            if updates["spawn"]:
+                data["spawn"] = updates["spawn"]
+            else:
+                data.pop("spawn", None)
         if "calendar_uid" in updates:
             if updates["calendar_uid"]:
                 data["calendar_uid"] = updates["calendar_uid"]

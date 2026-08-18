@@ -31,7 +31,7 @@ import {
   type HintKind,
 } from '@vexa/mixed-pipeline';
 import { TranscriptionClient, type TranscriptionResult } from '@vexa/transcribe-whisper';
-import { VoxtralTranscriber, Reson8Transcriber, LiveSpeakerStreams } from '@vexa/stt-live';
+import { VoxtralTranscriber, Reson8Transcriber, LiveSpeakerStreams, type VoxtralTranscriberConfig } from '@vexa/stt-live';
 import { isMixedLanePlatform, type Invocation, type Platform } from './config.js';
 import type { TranscriptSegment } from './contracts.js';
 import type { Pipeline, TranscriptSink } from './ports.js';
@@ -140,7 +140,7 @@ function laneSink(publish: TranscriptSink['publish'], onError?: (e: unknown) => 
  *  `startMs/1000` is epoch seconds. Without it the live `:mutable` bundle carries a null
  *  absolute_start_time and the dashboard renderer SKIPS every pending draft (it keys on absolute
  *  time), so Teams/Zoom transcripts only appeared after a reload (the REST read re-derives it). */
-function chunkToBotSegment(speaker: string, c: ChunkSegment, completed: boolean): TranscriptSegment {
+function chunkToBotSegment(speaker: string, c: ChunkSegment, completed: boolean, stable = false): TranscriptSegment {
   return {
     segment_id: c.segmentId,
     // Provisional cluster ids (seg_N) are an internal key, never a display name; while
@@ -154,6 +154,7 @@ function chunkToBotSegment(speaker: string, c: ChunkSegment, completed: boolean)
     end: c.endMs / 1000,
     language: c.language,
     completed,
+    ...(stable && !completed ? { stable: true } : {}),
     absolute_start_time: isoFromEpochSeconds(c.startMs / 1000),
     absolute_end_time: isoFromEpochSeconds(c.endMs / 1000),
     source: 'merged',
@@ -173,7 +174,8 @@ function createGmeetLiveBotPipeline(
   const publish = (channel: number, speaker: string, segs: import('@vexa/stt-live').VoxtralSegment[], completed: boolean): void => {
     for (const c of segs) {
       const seg: ChunkSegment = { text: c.text, startMs: c.startMs, endMs: c.endMs, language: c.language, segmentId: `ch${channel}:${c.segmentId}` };
-      void sink.publish(chunkToBotSegment(speaker, seg, completed)).catch((e) => {
+      // Live-engine drafts are model-committed → stable: consumers act before the segment closes.
+      void sink.publish(chunkToBotSegment(speaker, seg, completed, true)).catch((e) => {
         (onError ?? ((err) => console.error(`[bot] pipeline(gmeet-live): publish rejected: ${String(err)}`)))(e);
       });
     }
@@ -184,6 +186,7 @@ function createGmeetLiveBotPipeline(
       url,
       apiToken: inv.transcriptionServiceToken ?? undefined,
       model: inv.transcriptionModel ?? undefined,
+      voxtral: { languageRepair: languageRepairFromEnv() },
     },
     {
       language: inv.language ?? undefined,
@@ -232,6 +235,8 @@ function createMixedBotPipeline(
   language?: string,
   onError?: (e: unknown) => void,
   createTranscriber: MixedTranscriberFactory = (cb) => ChunkedTranscriber.create(cb),
+  /** Live engines' pending drafts are model-committed → published as stable. */
+  stableDrafts = false,
 ): BotPipeline {
   let transcriber: MixedTranscriber | null = null;
   let creating: Promise<MixedTranscriber> | null = null;
@@ -239,7 +244,7 @@ function createMixedBotPipeline(
 
   const publish = (speaker: string, segs: ChunkSegment[], completed: boolean): void => {
     for (const c of segs) {
-      void sink.publish(chunkToBotSegment(speaker, c, completed)).catch((e) => {
+      void sink.publish(chunkToBotSegment(speaker, c, completed, stableDrafts)).catch((e) => {
         (onError ?? ((err) => console.error(`[bot] pipeline(mixed): publish rejected: ${String(err)}`)))(e);
       });
     }
@@ -306,12 +311,20 @@ const stripLiveFragment = (url: string): string => url.replace(/#live$/i, '');
 
 /** The MixedTranscriberFactory for a live engine — same callback contract as the
  *  chunked transcriber; the engines compose the shared ClusterNameBinder internally. */
+/** Voxtral has no language control; when a Whisper endpoint is provided (bot env
+ *  STT_LANGUAGE_REPAIR_URL/_TOKEN — the transcription LB), segments that drift out of the
+ *  session language are re-transcribed there with `language` pinned. Unset ⇒ off. */
+function languageRepairFromEnv(env: NodeJS.ProcessEnv = process.env): VoxtralTranscriberConfig['languageRepair'] {
+  const url = env.STT_LANGUAGE_REPAIR_URL?.trim();
+  return url ? { url, apiToken: env.STT_LANGUAGE_REPAIR_TOKEN?.trim() || undefined } : undefined;
+}
+
 function createLiveTranscriberFactory(engine: Exclude<LiveEngine, null>, inv: Invocation): MixedTranscriberFactory {
   const url = stripLiveFragment(inv.transcriptionServiceUrl ?? '');
   return (cb) => engine === 'reson8'
     ? Reson8Transcriber.create({ url, apiKey: inv.transcriptionServiceToken ?? '' }, cb)
     : VoxtralTranscriber.create(
-        { url, apiToken: inv.transcriptionServiceToken ?? undefined, model: inv.transcriptionModel ?? undefined }, cb);
+        { url, apiToken: inv.transcriptionServiceToken ?? undefined, model: inv.transcriptionModel ?? undefined, languageRepair: languageRepairFromEnv() }, cb);
 }
 
 /** Build the real STT transcribe closure from invocation.v1 — language baked into the call so
@@ -327,7 +340,9 @@ export function createTranscribe(inv: Invocation): Transcribe {
     model: inv.transcriptionModel ?? undefined,
   });
   const language = inv.language ?? undefined;
-  return (pcm, prompt) => client.transcribe(pcm, language, prompt);
+  // Whisper has ONE prompt slot: the vocabulary bias leads, the lane's continuity context follows.
+  const bias = inv.initialPrompt?.trim() || undefined;
+  return (pcm, prompt) => client.transcribe(pcm, language, [bias, prompt].filter(Boolean).join(' ') || undefined);
 }
 
 /**
@@ -355,7 +370,7 @@ export function createBotPipeline(
       ?? (live ? createLiveTranscriberFactory(live, inv) : undefined);
     return createMixedBotPipeline(
       transcribe, sink, hintKindForPlatform(inv.platform),
-      inv.language ?? undefined, opts.onError, factory,
+      inv.language ?? undefined, opts.onError, factory, live !== null,
     );
   }
   if (live && !opts.transcribe) {

@@ -170,6 +170,9 @@ async def request_bot(
     transcription_service_url_override: Optional[str] = None,
     transcription_service_token_override: Optional[str] = None,
     transcription_model_override: Optional[str] = None,
+    # Whisper vocabulary bias (dictionary terms, participant/agent names) — prepended to the batch
+    # lane's `prompt`; live engines have no prompt slot and ignore it.
+    initial_prompt: Optional[str] = None,
     max_concurrent: Optional[int] = None,
     redis_url: Optional[str] = None,
     meeting_api_url: Optional[str] = None,
@@ -472,6 +475,7 @@ async def request_bot(
         transcription_service_url=transcription_service_url,
         transcription_service_token=transcription_service_token,
         transcription_model=transcription_model,
+        initial_prompt=initial_prompt,
         recording_enabled=recording_enabled,
         capture_modes=(["audio", "video"] if recording_enabled else None),
         recording_upload_url=f"{meeting_api_url}/internal/recordings/upload",

@@ -69,6 +69,9 @@ interface SpeakerBuffer {
   pendingDraftStartMs: number;
 }
 
+/** Turn-close remnants shorter than this (and never transcribed) are dropped, not submitted. */
+const MIN_FLUSH_AUDIO_SEC = 0.5;
+
 export interface SpeakerStreamManagerConfig {
   /** Minimum unconfirmed audio before submission (seconds). Default: 2 */
   minAudioDuration?: number;
@@ -501,6 +504,14 @@ export class SpeakerStreamManager {
         log(`[SpeakerStreams] Close while in-flight for "${buffer.speakerName}" — finalize deferred to response (${unconfirmedSec.toFixed(1)}s audio held)`);
         return;
       }
+      if (unconfirmedSec < MIN_FLUSH_AUDIO_SEC) {
+        // A sub-half-second remnant that never produced a transcript is a breath or a clipped
+        // syllable; Whisper answers those with a stock phrase ("Dank u wel."), not words.
+        log(`[SpeakerStreams] Flush-drop for "${buffer.speakerName}" (${unconfirmedSec.toFixed(1)}s audio < ${MIN_FLUSH_AUDIO_SEC}s, no transcript yet)`);
+        this.finalizePendingDraft(buffer);
+        this.fullReset(buffer);
+        return;
+      }
       buffer.idleSubmitted = true;
       log(`[SpeakerStreams] Flush-submit for "${buffer.speakerName}" (${unconfirmedSec.toFixed(1)}s audio, no transcript yet)`);
       await this.submitBuffer(buffer);
@@ -729,14 +740,18 @@ export class SpeakerStreamManager {
       buffer.confirmedSamples = buffer.totalSamples;
     }
 
-    // Trim confirmed chunks from the front to free memory
+    // Trim confirmed chunks from the front to free memory. The window start moves with the
+    // audio actually trimmed — on the buffer's gapless AUDIO timeline, not to Date.now(): the
+    // samples left in the buffer were spoken up to a submit-interval + a Whisper call ago, and
+    // stamping "now" put every following segment (until a full reset) that much late.
+    const trimmedMs = (buffer.confirmedSamples / this.sampleRate) * 1000;
     this.trimBuffer(buffer);
 
     // Reset confirmation state for the next segment window
     buffer.lastTranscript = '';
     buffer.confirmCount = 0;
     buffer.lastWords = [];
-    buffer.windowStartMs = Date.now();
+    buffer.windowStartMs += trimmedMs;
     // The window moved on; the prior pending draft (under the OLD windowStartMs) is superseded.
     // Drop the in-memory tracking so a later turn-close finalize can't re-emit this stale window's
     // text. We don't clear the consumer's draft row here (mid-stream) to avoid a live-edge flicker —

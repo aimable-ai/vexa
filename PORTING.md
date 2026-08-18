@@ -96,8 +96,12 @@ Behavioral requirements (each with its why):
   finalizes early (c2f774d4).
 - **Tail flush 1200 ms synthetic silence** on speech pause (>960 ms delay
   conditioning — 26d3b689, 1962f2f5).
-- **Context guard**: recycle the session before the server context ceiling, seamless
-  carry-over (0c47a622).
+- **Context guard**: session recycle exists but is **opt-in** (`sessionMaxAudioSec`,
+  default 0). audio.cpp keeps a rolling KV ring (`stream_decode_cache_steps` 1024 ≈ 82 s),
+  and every reopen lost the first utterance after it (2026-08-17 meeting 6) — so one
+  session per meeting; idle close 300 s (was 20 s). Only the audio.cpp
+  `live_ingest.total_timeout_ms` (30 min) closes a stream — raise it + nginx
+  `proxy_read_timeout` together.
 - **Pending segments carry `stable: true`** (deltas are model-committed — e2e60e6d).
   Rides the additive WS frame (decision 2); platform's wake-word dispatch (AIM-1446)
   consumes it.
@@ -148,21 +152,28 @@ Resolution of the open items:
 - Dispatch lives in `bot/src/pipeline.ts` `liveEngineForUrl`: `ws(s)://` → live engine
   (reson8 by host match, else voxtral); `http(s)://…#live` → voxtral HTTP-live
   (fragment stripped before use); anything else → stock chunked whisper lane.
-  Mixed lane only; `transcribeEnabled:false` never engages a live engine; an
-  injected test factory always wins.
+  Mixed lane AND gmeet lane (per-channel `LiveSpeakerStreams`, e23bb7ff);
+  `transcribeEnabled:false` never engages a live engine; an injected test factory
+  always wins.
 - **Engine selection rides the admin-api Settings-configured backend** (per-user
   transcription url/token), NOT the env URL: the spawn gate's cached STT probe
   verdict only guards the ENV backend (`service.py` "the ENV backend only"), so a
   `ws://` Settings URL spawns cleanly while env stays the probeable whisper URL.
   aimable-platform selects the engine by setting its vexa user's backend.
-- Per-meeting (not per-user) engine override on POST /bots stays deferred — it
-  needs the api.v1 vN+1 upstream flagged in router.py; per-user is enough for the
-  Teams customer and A/B.
-- `stable` flag: DROPPED as a wire field. Live-engine pending drafts are
-  categorically stable (model-committed), so the platform treats completed:false
-  segments from live-engine meetings as stable BY ENGINE PROPERTY — zero contract
-  surface. (transcript.v1 segments are additionalProperties:false; a wire field
-  would have needed a fork-local re-seal for no informational gain.)
+- Per-request STT override on POST /bots IS implemented (6ab14180: `bot_spawn/router.py`
+  `_validated_stt_url`, precedence request > user Settings > env; `tests/test_stt_override.py`).
+  This is the path live engines actually use: admin-api `PUT /user/transcription`
+  validates http(s)-only (`admin_api/app/main.py:247-270`), so a `ws(s)://` Settings
+  backend is rejected 422 — either relax that validator or keep relying on the
+  per-request override (platform `_resolve_stt_backend` already does).
+- `stable` flag: REVISITED 2026-08-17. Original call was "dropped as a wire field"
+  (stable by engine property). In practice the platform's wake-word dispatch
+  (AIM-1446, `meetings_live.py` reads `pending[].stable`) needs it on the frame, and
+  the uncommitted diff now adds `stable` (optional) to the sealed
+  `transcript.v1/transcript.schema.json` + reseals `contracts.seal.json`, bot
+  `contracts.ts`/`pipeline.ts` `chunkToBotSegment(..., stable)`, collector
+  `ingest.py` passthrough. **Decided 2026-08-17 (Ludger): keep the reseal** —
+  `stable` is an optional wire field on transcript.v1; re-apply on rebase.
 
 ### P4-original (for reference)
 No sealed-contract change (decision 2). Work items:
@@ -206,22 +217,120 @@ preflight (503 + 60 s spawn-refusal on bad URL/token) behaves for all three.
 - Calendar: moved to aimable-platform (decision 4).
 - AIM-1446 wake words: platform-side; consumes the P1 `stable` field on WS frames.
 
-## aimable-platform adaptation checklist (separate repo, do alongside P4)
+## aimable-platform adaptation (separate repo, branch aim-1377-voxtral-mini)
 
-1. Mint a `bot,tx`-scoped API key (0.12 gateway enforces scopes; bot-only key → 403
-   on /transcripts).
-2. Tolerate new statuses (`needs_help`, `idle`, `scheduled`) + the auto-subscribed
-   `u:{user_id}:meetings` WS frames (flat `status` field).
-3. Use `continue_meeting: true` on bot re-create — kills the stale-WS/meeting-id
-   churn bug (AIM-1445 class).
-4. Sanitize `native_meeting_id` (no `? # & = /` or whitespace, ≤255 — hard 422s now).
-5. Handle `POST /bots` 503 (STT preflight red, 60 s refusal window) distinctly from 5xx.
-6. Webhooks: dedupe on `event_id` (at-least-once, two events per FSM advance);
-   explicitly enable needed events (default = meeting.completed only). We're likely
-   the first real webhook receiver on 0.12 — validate early.
-7. Drop `POST /meetings/{id}/transcribe` + public share-URL usage (gone/changed).
-8. Re-home AIM-1429 create-meeting into the platform.
-9. Read the `stable` field off WS transcript frames for wake-word dispatch.
+Audit 2026-08-17 against 0.12 routers/schemas. Status per original checklist item:
+
+1. `bot,tx`-scoped key — DONE (`vexa_client.admin_create_token`, provisioning).
+2. New statuses + flat `u:{user_id}:meetings` frames — MISSING, **hard failure**:
+   `ck_meeting_status` CHECK allows 7 values; webhook writes status verbatim →
+   `needs_help` = IntegrityError → 500 → 0.12 retries 5xx → poison loop. Needs a
+   migration widening the CHECK (+ `ACTIVE_STATUSES`, stop gate, workbench
+   `MeetingStatus` union/badges). Flat frames are ignored today (workbench reads
+   `payload.status`); route by `meeting.id`.
+3. `continue_meeting: true` on re-create — MISSING (`create_bot` body; Agreed reconnect
+   `agreed.py` is exactly the AIM-1445 case).
+4. Sanitize `native_meeting_id` — PARTIAL (length only; raw ids → 422 → generic error).
+5. `POST /bots` 503 preflight — MISSING (`_map_vexa_error` folds ≥500; row stamped
+   `validation_error`).
+6. Webhooks — **BROKEN**: events are "enabled" via `X-User-Webhook-Events` header, which
+   the 0.12 gateway strips (`gateway/app.py:234`); `set_webhook_url` omits
+   `webhook_events` → only `meeting.completed` fires. Event names differ (0.12:
+   `bot.failed`, `recording.ready`, `meeting.started`; platform: `meeting.failed`,
+   `recording.completed`). No `event_id` dedupe; two envelopes per FSM advance →
+   capture job scheduled twice. Bearer-secret auth still compatible.
+7. Drop `/transcribe` + share URL — MISSING (batch transcribe, auto-batch on completion,
+   `delete_transcripts`, share returns token not URL, `get_public_transcript` unimplemented).
+8. Re-home AIM-1429 create-meeting — MISSING (see "Meeting initiation").
+9. Read `stable` off WS frames — DONE (depends on P4 `stable` decision).
+
+Beyond the checklist (all confirmed against 0.12 code):
+
+| Platform call | 0.12 reality | Impact |
+|---|---|---|
+| `GET /bots/status` → `running_bots[].meeting_status` | field is `status` | **active poller inert** |
+| concurrency limit = 403 | 429 (`MaxBotsExceeded`/`QuotaExceeded`) | Agreed "free slot + retry" never runs |
+| POST /bots `initial_prompt`, `default_avatar_url`, `transcription_engine`, `voice_agent_enabled` | not in router | ASR bias (AIM-1492) + branding silently dropped. **Decided: fork passes `initial_prompt` through to invocation → whisper lane `prompt`; live engines ignore it** (platform correction pass covers them) |
+| zoom without `meeting_url` | 422 | send the URL |
+| `PUT /user/transcription` `wss://` | http(s)-only validator | tenant backend (AIM-1507) whisper-only; live engines via per-space per-request override |
+| `/v1/audio/transcriptions` dictation | no gateway route | push-to-talk breaks; add fork route or hit whisper LB directly |
+| `PUT /bots/{p}/{n}/config`, `/speak`, `/chat`, `/screen`, `/avatar`, `DELETE /recordings/{id}` | 404 / KNOWN_GAPS | language change, nudge, recording delete dead (mostly warning-only) |
+| `PATCH /meetings {name,notes}` | accepts `title, scheduled_at, meeting_url, workspace_id, auto_join` | map name→title |
+| `GET /meetings` list `status_transition` | stripped from list rows | use `GET /meetings/{id}` |
+| `health_check` → `GET /admin/users` | doesn't exist | use `/health` |
+| Agreed reconnect `_create_kwargs` | sends engine enum, not url/token | reconnected bots fall back to default engine |
+| gateway rate limit | 40 rps / burst 120 → 429 | unhandled |
+
+Branch hygiene: AIM-1549 multi-bot cap is on `test` after the branch's last merge (not
+reverted — merge `test`). Agreed reconnect: the AIM-1377 vocabulary block overwrites
+the AIM-1468/1492 bias prompt (`agreed.py` ~:753 vs ~:769) — **decided: merge both
+into one `initial_prompt`**.
+
+## Meeting initiation (0.12 has no calendar service)
+
+Today (0.10): capture "Join meeting" and Agreed-with-link → `POST /bots` only. Agreed
+**solo mode** (AIM-1429) → platform `POST /v1/meetings/calendar/create-meeting` →
+vexa calendar-service does Google `events.insert` with conferenceData. **Calendar
+auto-join** (AIM-1005): platform runs Google OAuth (`meetings_calendar.py`) but hands
+the refresh_token to vexa (`calendar_set_credentials`) and never stores it; vexa syncs
+and auto-spawns.
+
+0.12: `/calendar` is `owned_elsewhere`; only ICS-feed calendar (`PUT /user/calendar
+{ics_url, auto_join}`) and planned meetings (`POST /meetings {meeting_url,
+scheduled_at, auto_join}`, 60 s lead).
+
+Needed:
+1. Store the Google refresh_token in the platform (SecretService per principal — the
+   connector OAuth framework already does this for Drive/Gmail) instead of pushing to
+   vexa. Consent flow + `calendar.events` scope already exist.
+2. Port `calendar-service/app/google_calendar.py:70-135` (~80 lines): refresh →
+   `events.insert?conferenceDataVersion=1` → `hangoutLink`; wire `create-meeting` to
+   it. Agreed then continues with `POST /bots`.
+3. Auto-join — **decided 2026-08-17: reimplement in the platform now.** Platform
+   stores the refresh token, polls Google Calendar events for connected users and
+   upserts 0.12 planned meetings (`POST /meetings {meeting_url, scheduled_at,
+   auto_join}`); 0.12 spawns at T-60 s. Title/attendees stay platform-side, so
+   `_resolve_calendar_event_title` lookups go away.
+4. Teams solo-start (Bolsius) needs Graph `onlineMeetings` — no equivalent anywhere;
+   separate ticket.
+
+## Deployment / cutover (vexa.aimable.ai)
+
+Box: 8 vCPU / 31 GiB / 90 GB, no GPU, three stacks on one daemon (`vexa` 0.10.6
+:8056 serves test.aimable.ai; `vexa-dev` :9056; `vexa-v012` loopback 18056/18057/18080).
+v012 today: images built by hand from a rsync copy (`/home/ludger/vexa-012-src`),
+compose in `/home/ludger/vexa-012/deploy/compose` (not git), env STT = whisper LB on
+pii :8083, Voxtral only via per-request override; DOCKER-USER iptables allowlist
+already covers test/demo/multitenant/hr2day (not lendahand).
+
+- [ ] Expose gateway + admin-api to platform servers (compose hardcodes
+      `127.0.0.1:${API_GATEWAY_HOST_PORT}` → override, or caddy site on the
+      `vexa-v012_vexa` network). S
+- [ ] Per-tenant provisioning: admin user + `bot,tx` token + `PUT /user/webhook` with
+      `webhook_events`. S
+- [ ] Repeatable deploy: one script builds bot+runtime+meeting-api under one tag,
+      writes the override, `compose up`, health-gates; box config under git. Bot
+      image is 6 GB — build on the box. M
+- [ ] Backups (pg_dump cron, minio mirror) + recording retention (MinIO ILM on
+      `vexa/recordings`; 0.12 has no retention knob, ~1 MB/min). S
+- [ ] pg `idle_in_transaction_session_timeout=600000`, bot `memoryMb` cap in profile. S
+- [ ] Monitoring: log-monitor sidecar for meeting-api/runtime, `/health` probe, disk
+      alert; `audiocpp-server` on pii has restart=no. S
+- [ ] Docker hygiene: prune (~45 GB reclaimable, disk 82 %), `log-opts max-size`,
+      remove stray `elegant_cori`; retire `vexa-dev` and unneeded v012 services
+      (agent-api, terminal, mcp). S
+- [ ] Set `STT_LANGUAGE_REPAIR_URL/_TOKEN` on the box (repair is off in the live lane);
+      verify `VEXA_WORKLOAD_LOG_DIR` persistence (dir empty after 4 meetings). S
+
+Decisions 2026-08-17 (Ludger): stay **local/dev only** for now — local platform on
+`aim-1377-voxtral-mini` → SSH tunnel → the existing v012 stack; no server cutover yet.
+Dead 0.10 paths (batch `/transcribe`, share URL, bot ops, recording delete) are **kept
+behind warnings**, not removed. Everything tracked on AIM-1467 (no sub-issues).
+
+Order: freeze fork (commit, gates green, `stable` reseal kept, `initial_prompt`
+pass-through) → platform protocol fixes → create-meeting re-home + auto-join sync →
+deploy hardening → point test at v012, keep 0.10 for rollback → then P5 / rebase onto
+v0.12.22 / fork hygiene.
 
 ## Fork hygiene (one-time, this repo)
 
@@ -293,3 +402,58 @@ Upstream knobs relevant to Teams tuning: `VEXA_HINT_MIN_COVERAGE` 0.35,
   stt-live registered in architecture.calm.json + resealed; static gates green.
   Remaining: full bot suite verify, commit, fixtures + live A/B (blocked on
   smoke calls), platform-side work (separate repo).
+- 2026-08-12..17: per-request STT override on POST /bots (6ab14180); gmeet lane live
+  engines via `LiveSpeakerStreams` (e23bb7ff); audio.cpp stream-contract query on
+  HTTP-live URLs (91560638). Session policy: idle close 300 s, context-guard recycle
+  opt-in, primer discard capped 150 % (every reopen lost the first utterance).
+  Uncommitted: `stable` on transcript.v1 (+reseal), `LanguageRepair`
+  (`stt-live/src/language-repair.ts`, whisper re-transcribe on nl/en/de drift),
+  binder `HINT_EXTEND_MAX_MS` dense-hint extension, `VEXA_CAPTURE_SIGNAL_HOST_DIR` +
+  `VEXA_WORKLOAD_LOG_DIR` binds in `docker_backend.py`, replay harnesses
+  (`replay-captured.ts`, `replay-wav.ts`, `replay-captured-whisper.ts`). Deployed
+  as `aim1467-3` (runtime, meeting-api) / `aim1467-4` (bot).
+- 2026-08-17: completion audit (fork repo, platform, box). Findings folded into the
+  new "aimable-platform adaptation", "Meeting initiation" and "Deployment / cutover"
+  sections above. Fork open items: `stable` decision; `gates.mjs config-contract`
+  RED (`VEXA_CAPTURE_SIGNAL_HOST_DIR`, `VEXA_WORKLOAD_LOG_DIR` undeclared in
+  `runtime_kernel/config.v1.json`); new env absent from compose `.env.example` /
+  `turbo.json passThroughEnv`; live-engine transport faults only reach `onClose`
+  (reconnect without backoff, no `onError`/sttFaults); P5 track-swap/crash/memory
+  unported; fork hygiene untouched; no replay fixtures/determinism evidence;
+  upstream at v0.12.22 (mixed lane/binder/pipeline rewritten — rebase will conflict).
+- 2026-08-17 (later): fork freeze, part 1. `gates.mjs config-contract` GREEN — six runtime
+  keys declared in `runtime_kernel/config.v1.json` (`VEXA_CAPTURE_SIGNAL[_DIR|_HOST_DIR]`,
+  `VEXA_WORKLOAD_LOG_DIR`, `STT_LANGUAGE_REPAIR_URL/_TOKEN`) + surfaced in compose
+  `runtime.environment` and `.env.example`. `initial_prompt` pass-through: open api.v1 body
+  field (`_validated_initial_prompt`, ≤2000 chars) → `request_bot(initial_prompt=)` →
+  sealed `invocation.v1.initialPrompt` (resealed) → bot `createTranscribe` prepends it to
+  whisper's single `prompt` slot (bias leads, continuity context follows); live engines
+  ignore it. Tests: `test_stt_override.py` (+2), `pipeline.test.ts` §4b. Full gate run
+  green except the pre-existing local-env `alpine:latest` runtime docker test and
+  `gate:compose` (no `vexaai/vexa-bot:v012` image locally). Note: `npx` is not on this
+  machine's PATH — shim it from the pnpm store or `gate:graph`/`arch-report` go red for
+  the wrong reason. Not yet committed.
+- 2026-08-17 (later): step 2 + 3 (platform, branch aim-1377-voxtral-mini, uncommitted).
+  Protocol: `set_webhook_url` sends `webhook_events` (started/status_change/completed/
+  bot.failed/recording.ready + legacy names); webhook handler accepts old+new event names,
+  `event_id` dedupe table `meeting_webhook_event`, unknown status never raises; migration
+  `vx139status012` widens `ck_meeting_status` to the 0.12 vocabulary (+ idle/scheduled/
+  needs_help; workbench union/badges); `create_bot` sends `continue_meeting`, zoom
+  `meeting_url`, clipped `initial_prompt`, per-request STT; 429 → concurrency, 503 STT
+  preflight → `MEETING_STT_UNAVAILABLE`; `native_meeting_id` sanitised; poller reads
+  `status`/`meeting_status`; status history via `GET /meetings/{id}`; `health_check` off
+  `/admin/users`; Agreed reconnect merges bias prompt + vocabulary, passes
+  `continue_meeting` + STT url/token, frees slot on 429. Dictation: `transcribe_audio`
+  posts straight to `MEETING_STT_WHISPER_URL` when set (0.12 gateway has no passthrough).
+  Meeting initiation: fork planned meetings accept `spawn{…}` (POST/PATCH /meetings →
+  data.spawn → auto_join sweep → request_bot; tests); platform stores the Google refresh
+  token as a Secret, `google_calendar_service` (create Meet event, list events),
+  `meeting_calendar_sync_service` (5-min sweep → 0.12 planned meetings, one row per link),
+  migration `cal140gsync`, `/v1/meetings/calendar/*` re-homed, vexa `calendar_*` proxy
+  methods deleted. Review pass (multi-angle) → fixes in flight: unflushed retire re-plan,
+  stale planned rows never unplanned, re-auth orphaning Vexa rows, tenant scoping of
+  connections, Teams `/0` id normalisation, `stop_bot` needs_help, authenticated
+  health probe, webhook_events re-registration for existing users, poller field order on
+  0.10, webhook claim placement, agreed 403/429 classifier, STT-unavailable copy,
+  webhook-event retention. Open: which space/STT a calendar-planned bot should use
+  (currently tenant default_space); PII/language/initial_prompt not in calendar spawn.

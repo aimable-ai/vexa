@@ -19,9 +19,11 @@
  *     commit — a delta-only gap fires between every commit and chops sentences);
  *   - delay conditioning (~960 ms) withholds an utterance's final words until it
  *     sees audio AFTER them → on speech pause push 1200 ms synthetic silence;
- *   - the server never bounds its own context (~8k tokens ≈ 11 min audio) →
- *     recycle the session at the first pause past the audio budget, forced past
- *     an extra margin even mid-speech.
+ *   - every session (re)open is a cold start — primer replay, language re-lock,
+ *     delay warm-up — and the first utterance after one is the one that gets
+ *     mangled, so a session lives for the whole meeting: audio.cpp bounds its own
+ *     decoder context (KV ring, wraps in place), idle only closes after minutes,
+ *     and the context-guard recycle is opt-in (vLLM-era servers without a ring).
  *
  * WHO: the shared ClusterNameBinder (hints by time window). Every turn gets a
  * provisional `seg_N` cluster id; a turn with no overlapping hint publishes
@@ -32,6 +34,7 @@ import { ClusterNameBinder, type HintKind } from '@vexa/mixed-pipeline/binder';
 import { openLiveTransport, type LiveTransport, type TransportFactory } from './live-transport.js';
 import { PrimerGate } from './primer.js';
 import { isJunk } from './junk-filter.js';
+import { LanguageRepair, type LanguageRepairConfig } from './language-repair.js';
 
 const SAMPLE_RATE = 16000;
 /** The server only transcribes committed audio — commit cadence. */
@@ -49,9 +52,9 @@ const MAX_SEGMENT_CHARS = 600;
 const SENTENCE_MIN_CHARS = 40;
 const SENTENCE_QUIET_MS = 700;
 /** Close an idle transport after this long without audio (reopens on next frame). */
-const IDLE_TIMEOUT_MS = 20_000;
-/** Recycle the session once it has heard this much audio (context guard)... */
-const SESSION_MAX_AUDIO_SEC = 240;
+const DEFAULT_IDLE_TIMEOUT_MS = 300_000;
+/** Recycle the session once it has heard this much audio (context guard); 0 = never. */
+const DEFAULT_SESSION_MAX_AUDIO_SEC = 0;
 /** ...waiting for a pause; force it after this much extra audio — a mid-speech
  *  recycle costs a word or two once, context overflow costs everything. */
 const SESSION_FORCE_EXTRA_SEC = 160;
@@ -98,8 +101,14 @@ export interface VoxtralTranscriberConfig {
   now?: () => number;
   /** 0 disables the internal timer (tests drive sweep() directly). Default 250. */
   sweepIntervalMs?: number;
+  /** Close an idle transport after this long without audio. Default 300 000. */
+  idleTimeoutMs?: number;
+  /** Recycle the session once it has heard this much audio (seconds); 0 = never. Default 0. */
+  sessionMaxAudioSec?: number;
   /** Extra junk phrases (lowercased). */
   junkPhrases?: ReadonlySet<string>;
+  /** Re-transcribe segments that drift out of the session language (see LanguageRepair). */
+  languageRepair?: Omit<LanguageRepairConfig, 'language'>;
 }
 
 interface TurnRecord {
@@ -113,7 +122,10 @@ export class VoxtralTranscriber {
   private pendingAudio: Buffer[] = [];
   private readonly binder: ClusterNameBinder;
   private readonly primer: PrimerGate;
+  private readonly repair: LanguageRepair | null;
   private readonly now: () => number;
+  private readonly idleTimeoutMs: number;
+  private readonly sessionMaxAudioSec: number;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
 
@@ -140,7 +152,10 @@ export class VoxtralTranscriber {
 
   constructor(private cfg: VoxtralTranscriberConfig, private cb: VoxtralTranscriberCallbacks) {
     this.now = cfg.now ?? Date.now;
+    this.idleTimeoutMs = cfg.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+    this.sessionMaxAudioSec = cfg.sessionMaxAudioSec ?? DEFAULT_SESSION_MAX_AUDIO_SEC;
     this.primer = new PrimerGate(cb.language, this.now);
+    this.repair = cfg.languageRepair ? new LanguageRepair({ ...cfg.languageRepair, language: cb.language }) : null;
     this.binder = new ClusterNameBinder({
       onLateResolve: (clusterId, name) => this.applyLateResolve(clusterId, name),
     });
@@ -168,6 +183,7 @@ export class VoxtralTranscriber {
     this.sessionAudioSec += pcm.length / SAMPLE_RATE;
     this.starvedAudioSec += pcm.length / SAMPLE_RATE;
     const pcm16 = float32ToPcm16(pcm);
+    this.repair?.remember(tsMs, pcm16);
     if (this.transport?.ready) {
       this.transport.sendAudio(pcm16);
       this.audioSinceCommit = true;
@@ -312,10 +328,20 @@ export class VoxtralTranscriber {
     const speaker = res.speakerName;
     this.rememberTurn(clusterId, speaker, seg);
     this.cb.log?.(`[voxtral] CONFIRMED (${reason}) ${speaker} | "${text.slice(0, 60)}"`);
-    // ONE atomic bundle: confirmed + (empty) surviving pending tail.
-    this.cb.publish(speaker, [seg], []);
     this.pendingSpeaker = null;
     this.endTurn();
+    // Language drift (a Dutch turn rendered in EN/DE) → re-transcribe this segment's own audio
+    // with the language pinned, then publish; the round-trip only delays the flagged segment.
+    if (this.repair?.observe(text)) {
+      this.cb.log?.(`[voxtral] [REPAIR] ${this.repair.language} drift: "${text.slice(0, 60)}"`);
+      void this.repair.repair(seg.startMs, seg.endMs).then((fixed) => {
+        if (fixed) { this.cb.log?.(`[voxtral] [REPAIRED] "${fixed.slice(0, 60)}"`); seg.text = fixed; }
+        this.cb.publish(speaker, [seg], []);
+      });
+      return;
+    }
+    // ONE atomic bundle: confirmed + (empty) surviving pending tail.
+    this.cb.publish(speaker, [seg], []);
   }
 
   private clearPendingDraft(): void {
@@ -396,7 +422,7 @@ export class VoxtralTranscriber {
     // sees audio AFTER them; the capture sends nothing during a pause.
     if (!this.tailFlushed && t?.ready &&
         now - this.lastAudioWallMs > TAIL_FLUSH_AFTER_MS &&
-        now - this.lastAudioWallMs < IDLE_TIMEOUT_MS) {
+        now - this.lastAudioWallMs < this.idleTimeoutMs) {
       t.sendAudio(TAIL_SILENCE);
       t.commit();
       this.lastCommitWallMs = now;
@@ -412,9 +438,9 @@ export class VoxtralTranscriber {
     }
     // Context guard — recycle at the first pause past the audio budget, forced
     // past the extra margin even mid-speech.
-    if (t?.ready && this.sessionAudioSec >= SESSION_MAX_AUDIO_SEC &&
+    if (t?.ready && this.sessionMaxAudioSec > 0 && this.sessionAudioSec >= this.sessionMaxAudioSec &&
         ((this.tailFlushed && now - this.lastAudioWallMs > TAIL_FLUSH_AFTER_MS) ||
-         this.sessionAudioSec >= SESSION_MAX_AUDIO_SEC + SESSION_FORCE_EXTRA_SEC)) {
+         this.sessionAudioSec >= this.sessionMaxAudioSec + SESSION_FORCE_EXTRA_SEC)) {
       this.recycleSession('context guard');
       return;
     }
@@ -425,7 +451,7 @@ export class VoxtralTranscriber {
       this.cb.onError?.(new Error(`voxtral starved: ${this.starvedAudioSec.toFixed(1)}s audio unanswered`));
     }
     // Long idle → close the transport (reopens on next audio).
-    if (t && now - this.lastAudioWallMs > IDLE_TIMEOUT_MS && this.lastAudioWallMs > 0) {
+    if (t && now - this.lastAudioWallMs > this.idleTimeoutMs && this.lastAudioWallMs > 0) {
       this.cb.log?.('[voxtral] idle close');
       this.finalizeSegment('idle');
       t.close();

@@ -105,6 +105,13 @@ def default_registry() -> ProfileRegistry:
             "BOT_SPEAKER_CONFIRM_THRESHOLD",
             "BOT_SPEAKER_MAX_BUFFER_SEC",
             "BOT_SPEAKER_IDLE_TIMEOUT_SEC",
+            # O-TEL-1 raw captured-signal.v1 recording (offline exact replay); the docker
+            # backend binds VEXA_CAPTURE_SIGNAL_HOST_DIR over the in-container dir.
+            "VEXA_CAPTURE_SIGNAL",
+            "VEXA_CAPTURE_SIGNAL_DIR",
+            # Whisper endpoint the live (Voxtral) engine re-transcribes language-drifted segments on.
+            "STT_LANGUAGE_REPAIR_URL",
+            "STT_LANGUAGE_REPAIR_TOKEN",
         )
         if os.environ.get(key, "").strip()
     }

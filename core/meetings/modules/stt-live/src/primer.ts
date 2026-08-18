@@ -4,7 +4,9 @@
  * in the meeting language, and the primer's own transcript must NEVER reach the
  * transcript stream. Three distinct leak paths are guarded:
  *   1. the primer transcript itself (discarded until sentence end AND >=85% of the
- *      expected text length — a period emitted early cannot end the discard);
+ *      expected text length — a period emitted early cannot end the discard; and
+ *      never past 150% of it — a missing period cannot extend the discard into the
+ *      speaker's first words);
  *   2. short early output that slips the similarity check (length floor);
  *   3. delay conditioning releasing the primer TAIL after the discard window closed
  *      (residue check on every pending/finalized text).
@@ -23,6 +25,8 @@ const PRIMER_TEXTS: Record<string, string> = {
 export const PRIMER_TIMEOUT_MS = 6000;
 /** Discard needs a length floor besides the sentence end — 85% of the expected text. */
 const PRIMER_MIN_CHARS_RATIO = 0.85;
+/** ...and a ceiling: past 150% of the expected text the discard has run into real speech. */
+const PRIMER_MAX_CHARS_RATIO = 1.5;
 
 const SENTENCE_END = /[.!?…]["')\]]?\s*$/;
 
@@ -34,6 +38,7 @@ export class PrimerGate {
   /** Raw PCM16 to play at session open; null when the language has no primer. */
   readonly pcm: Buffer | null;
   private readonly minChars: number;
+  private readonly maxChars: number;
   private readonly norm: string;
   private pending = false;
   private text = '';
@@ -43,6 +48,7 @@ export class PrimerGate {
     const key = (language ?? '').toLowerCase().slice(0, 2);
     this.pcm = PRIMERS[key] ?? null;
     this.minChars = Math.floor((PRIMER_TEXTS[key]?.length ?? 0) * PRIMER_MIN_CHARS_RATIO);
+    this.maxChars = Math.ceil((PRIMER_TEXTS[key]?.length ?? 0) * PRIMER_MAX_CHARS_RATIO);
     this.norm = normalize(PRIMER_TEXTS[key] ?? '');
   }
 
@@ -60,6 +66,14 @@ export class PrimerGate {
     if (!this.pending) return false;
     if (this.now() - this.sentAtMs > PRIMER_TIMEOUT_MS) {
       // Primer transcript never fully arrived — stop discarding, delta is real.
+      this.pending = false;
+      this.text = '';
+      return false;
+    }
+    const len = this.text.trim().length;
+    if (len >= this.minChars && len + delta.trim().length > this.maxChars) {
+      // The primer is essentially in and this delta would run well past it — it is
+      // the speaker's first words, not primer transcript.
       this.pending = false;
       this.text = '';
       return false;

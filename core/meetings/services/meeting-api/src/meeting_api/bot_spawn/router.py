@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -53,6 +53,22 @@ NATIVE_MEETING_ID_MAX_LEN = 255
 #: short ids, and Jitsi rooms all exclude `? # & = /` and whitespace (see collector.meeting_link).
 NATIVE_MEETING_ID_URL_CHARS = "?#&=/"
 
+
+
+def _validated_initial_prompt(value: Any) -> Optional[str]:
+    """Whisper vocabulary bias off the OPEN request body (same P3c pattern as the STT override).
+    Whisper reads ~224 tokens of prompt; longer text is silently truncated server-side, so cap the
+    wire at 2000 chars (the sealed invocation.v1 field's maxLength) instead of accepting a novel."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail="initial_prompt must be a string")
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) > 2000:
+        raise HTTPException(status_code=422, detail="initial_prompt must be at most 2000 characters")
+    return text
 
 
 def _validated_stt_url(value: Optional[object]) -> Optional[str]:
@@ -428,6 +444,7 @@ def build_router(
                 transcription_service_url_override=_validated_stt_url(body.get("transcription_service_url")),
                 transcription_service_token_override=body.get("transcription_service_token"),
                 transcription_model_override=body.get("transcription_model"),
+                initial_prompt=_validated_initial_prompt(body.get("initial_prompt")),
                 max_concurrent=max_concurrent,
                 webhook_url=x_user_webhook_url,
                 webhook_secret=x_user_webhook_secret,

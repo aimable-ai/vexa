@@ -19,6 +19,22 @@ from urllib.parse import quote
 import requests_unixsocket
 
 from .backend import WorkloadHandle
+
+
+def _demux_docker_log(raw: bytes) -> bytes:
+    """Strip the 8-byte stream-multiplex frame headers docker prepends to each log chunk when the
+    container has no TTY (``[type, 0, 0, 0, size_be32] payload``). TTY containers stream plain bytes,
+    which pass through unchanged (a plain byte stream never parses as a well-formed frame sequence)."""
+    out = bytearray()
+    i, n = 0, len(raw)
+    while i + 8 <= n:
+        kind = raw[i]
+        if kind not in (0, 1, 2) or raw[i + 1:i + 4] != b"\x00\x00\x00":
+            return raw
+        size = int.from_bytes(raw[i + 4:i + 8], "big")
+        out += raw[i + 8:i + 8 + size]
+        i += 8 + size
+    return bytes(out) if i == n else raw
 from .mounts import workspace_binds
 from .profiles import Runnable
 
@@ -219,6 +235,10 @@ class DockerBackend:
         dev_src = os.getenv("VEXA_AGENT_SRC_MOUNT")
         if dev_src:
             binds.append(f"{dev_src}:/app/src/agent_api:ro")
+        # Persist the bot's captured-signal.v1 recording out of the (removed-on-exit) container.
+        cap_host = os.getenv("VEXA_CAPTURE_SIGNAL_HOST_DIR")
+        if cap_host and env.get("VEXA_CAPTURE_SIGNAL") == "1":
+            binds.append(f"{cap_host}:{env.get('VEXA_CAPTURE_SIGNAL_DIR') or '/tmp/captured-signal'}")
         if binds:
             host_config["Binds"] = binds
 
@@ -368,7 +388,27 @@ class DockerBackend:
     def kill(self, h: WorkloadHandle) -> None:
         self._req("POST", f"/containers/{h._impl}/kill")  # type: ignore[attr-defined]
 
+    def _persist_logs(self, cid: str) -> None:
+        """Copy the workload's stdout/stderr to ``VEXA_WORKLOAD_LOG_DIR/<container-name>.log`` before the
+        container (and with it `docker logs`) is removed. A bot's own log lines are the diagnosis of a
+        bad transcript; without this they die with the workload. Best-effort: never blocks reclaim."""
+        log_dir = os.getenv("VEXA_WORKLOAD_LOG_DIR")
+        if not log_dir:
+            return
+        try:
+            info = self._req("GET", f"/containers/{cid}/json")
+            name = (info.json().get("Name") or cid).lstrip("/") if info.status_code == 200 else cid
+            r = self._req("GET", f"/containers/{cid}/logs?stdout=1&stderr=1&timestamps=1", timeout=60)
+            if r.status_code != 200:
+                return
+            os.makedirs(log_dir, exist_ok=True)
+            with open(os.path.join(log_dir, f"{name}.log"), "wb") as f:
+                f.write(_demux_docker_log(r.content))
+        except Exception as e:  # noqa: BLE001 — diagnostics must never fail reclaim
+            logger.warning("workload log persist failed for %s: %s", cid, e)
+
     def cleanup(self, h: WorkloadHandle) -> None:
+        self._persist_logs(h._impl)  # type: ignore[attr-defined]
         # Reclaim MUST be truthful: a failed force-delete while the container may still be running
         # would let `destroy` report `destroyed` over a live bot. 404 = already gone (fine).
         r = self._req("DELETE", f"/containers/{h._impl}?force=true")  # type: ignore[attr-defined]

@@ -234,3 +234,33 @@ def test_due_rows_window_edges():
     # malformed / missing time → never due
     assert not due_rows([{"id": 2, "user_id": USER, "platform": PLAT,
                           "native_meeting_id": NID, "data": {}}], now=NOW)
+
+
+# ---- data.spawn (fork, AIM-1467): planner-pinned options ride into the invocation ----
+
+async def test_spawn_options_reach_the_invocation():
+    import json
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    _seed(repo, data_extra={"spawn": {
+        "language": "nl", "bot_name": "Aimable", "initial_prompt": "Bolsius",
+        "transcription_service_url": "http://voxtral:8091/v1/audio/transcriptions/live#live",
+        "transcription_service_token": "tok", "recording_enabled": False,
+    }})
+    counters = await _tick(repo, runtime)
+    assert counters["spawned"] == 1
+    inv = json.loads(runtime.specs[-1]["env"]["VEXA_BOT_CONFIG"])
+    assert inv["language"] == "nl"
+    assert inv["botName"] == "Aimable"
+    assert inv["initialPrompt"] == "Bolsius"
+    assert inv["transcriptionServiceUrl"] == "http://voxtral:8091/v1/audio/transcriptions/live#live"
+    assert inv["transcriptionServiceToken"] == "tok"
+    assert inv["recordingEnabled"] is False
+
+
+async def test_no_spawn_options_keeps_defaults():
+    import json
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    _seed(repo)
+    await _tick(repo, runtime)
+    inv = json.loads(runtime.specs[-1]["env"]["VEXA_BOT_CONFIG"])
+    assert "initialPrompt" not in inv and "language" not in inv

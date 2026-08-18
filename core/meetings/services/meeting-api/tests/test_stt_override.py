@@ -71,3 +71,17 @@ async def test_no_override_keeps_env_resolution():
     inv = _invocation(runtime)
     assert inv["transcriptionServiceUrl"] == "http://env-whisper:8083"
     assert inv["transcriptionServiceToken"] == "env-token"
+
+
+async def test_initial_prompt_lands_in_invocation():
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    with patch.dict(os.environ, ENV):
+        await _spawn(repo, runtime, initial_prompt="Aimable, Bolsius, Compliance agent")
+    assert _invocation(runtime)["initialPrompt"] == "Aimable, Bolsius, Compliance agent"
+
+
+async def test_no_initial_prompt_omitted_from_invocation():
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    with patch.dict(os.environ, ENV):
+        await _spawn(repo, runtime)
+    assert "initialPrompt" not in _invocation(runtime)

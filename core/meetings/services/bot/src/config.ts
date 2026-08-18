@@ -68,6 +68,8 @@ export interface Invocation {
   transcriptionServiceUrl?: string;
   transcriptionServiceToken?: string;
   transcriptionModel?: string | null;
+  /** Vocabulary bias (names, dictionary terms) prepended to whisper's `prompt` on every batch request; live engines ignore it. */
+  initialPrompt?: string | null;
   // ── recording ──
   recordingEnabled?: boolean;
   captureSignalEnabled?: boolean;

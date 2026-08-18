@@ -103,6 +103,21 @@ async def test_ingest_keeps_zero_length_pending_draft(store, bus):
     assert payload["confirmed"] == []
 
 
+async def test_ingest_passes_stable_draft_flag_through(store, bus):
+    """Live engines mark pending drafts ``stable`` (model-committed text) so consumers can act before
+    the segment closes; the flag rides through to the mutable publish, and never onto a confirmed one."""
+    n = await ingest(store, bus, _message(1, [
+        {"segment_id": "s:1:d", "start": 5.0, "end": 5.5, "text": "Go", "speaker": "A",
+         "completed": False, "stable": True},
+        {"segment_id": "s:1:c", "start": 1.0, "end": 4.0, "text": "done", "speaker": "A",
+         "completed": True, "stable": True},
+    ]))
+    assert n == 2
+    payload = json.loads(bus.published[-1][1])
+    assert payload["pending"][0]["stable"] is True
+    assert "stable" not in payload["confirmed"][0]
+
+
 async def test_ingest_keeps_zero_length_chat_segment(store, bus):
     """A `chat` segment (transcript.v1 Source) is a point-in-time event — start == end AND
     completed=True by contract — so the garbage-final filter must pass it, and the stored

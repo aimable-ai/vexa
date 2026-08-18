@@ -84,6 +84,44 @@ async def _publish_user_meeting_status(
                   span="meetings.intent.publish", fields={"error": str(e)})
 
 
+
+# Fork (AIM-1467): per-meeting SPAWN options a planner may pin on a planned row so the auto-join
+# sweep spawns it like a manual POST /bots would (language, bot name, STT backend, prompt bias, …)
+# instead of the deployment defaults. Stored under data.spawn; forwarded by bot_spawn.auto_join.
+_SPAWN_STR_KEYS = frozenset({
+    "language", "task", "bot_name", "passcode", "transcription_tier",
+    "transcription_service_url", "transcription_service_token", "transcription_model",
+    "initial_prompt",
+})
+_SPAWN_BOOL_KEYS = frozenset({"recording_enabled", "transcribe_enabled"})
+
+
+def _validated_spawn(value) -> Optional[dict]:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=422, detail="'spawn' must be an object")
+    out: dict = {}
+    for k, v in value.items():
+        if k in _SPAWN_STR_KEYS:
+            if v is None:
+                continue
+            if not isinstance(v, str):
+                raise HTTPException(status_code=422, detail=f"'spawn.{k}' must be a string")
+            v = v.strip()
+            if not v:
+                continue
+            if len(v) > 2000:
+                raise HTTPException(status_code=422, detail=f"'spawn.{k}' too long")
+            out[k] = v
+        elif k in _SPAWN_BOOL_KEYS:
+            if not isinstance(v, bool):
+                raise HTTPException(status_code=422, detail=f"'spawn.{k}' must be a boolean")
+            out[k] = v
+        else:
+            raise HTTPException(status_code=422, detail=f"unknown 'spawn' field '{k}'")
+    return out or None
+
 def _resolve_user_id(x_user_id: Optional[str]) -> int:
     """The gateway injects ``x-user-id`` after it resolves ``x-api-key`` (anti-spoofing: it
     strips any client-supplied identity header first). Missing → 401 fail-closed."""
@@ -340,11 +378,12 @@ def build_router(
         auto_join = payload.get("auto_join", True)
         if not isinstance(auto_join, bool):
             raise HTTPException(status_code=422, detail="'auto_join' must be a boolean")
+        spawn = _validated_spawn(payload.get("spawn"))
 
         row = await store.create_planned_meeting(
             user_id, platform=platform, native_meeting_id=native_id,
             title=title, scheduled_at=scheduled_at, meeting_url=meeting_url,
-            workspace_id=workspace_id, auto_join=auto_join,
+            workspace_id=workspace_id, auto_join=auto_join, spawn=spawn,
         )
         if isinstance(row, dict) and row.get("error") == "duplicate":
             raise HTTPException(
@@ -421,6 +460,8 @@ def build_router(
             if not isinstance(payload["auto_join"], bool):
                 raise HTTPException(status_code=422, detail="'auto_join' must be a boolean")
             updates["auto_join"] = payload["auto_join"]
+        if "spawn" in payload:
+            updates["spawn"] = _validated_spawn(payload["spawn"])
         if not updates:
             raise HTTPException(status_code=422, detail="no editable fields in body")
 

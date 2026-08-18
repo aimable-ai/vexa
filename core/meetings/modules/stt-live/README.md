@@ -13,9 +13,12 @@ There is NO submit/confirm loop, no LocalAgreement, no ring buffer — deltas ar
 already committed by the model, which is why every pending draft is stable text
 (consumers may act before finalization).
 
-Cadence constants (commit 750 ms, gap 800 ms, tail-flush 1200 ms, context-guard
-240 s + 160 s force margin) are empirically derived — see the repo-root
-`PORTING.md` "Tuning constants" before changing any of them.
+Cadence constants (commit 750 ms, gap 800 ms, tail-flush 1200 ms) are empirically
+derived — see the repo-root `PORTING.md` "Tuning constants" before changing any of
+them. Session policy: one live session for the whole meeting (idle close 5 min,
+context-guard recycle off — audio.cpp's decoder KV is a ring; opt in via
+`sessionMaxAudioSec` for servers without one). Every reopen is a cold start and
+the first utterance after it is the one that degrades.
 
 Front door: `src/index.ts`. Tests: `pnpm --filter @vexa/stt-live test`
 (deterministic — injected clock + transport, no network, no timers).

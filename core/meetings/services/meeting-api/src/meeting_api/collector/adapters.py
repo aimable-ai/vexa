@@ -890,7 +890,7 @@ class SqlAlchemyTranscriptStore:
     async def create_planned_meeting(self, user_id, *, platform, native_meeting_id,
                                      title=None, scheduled_at=None, meeting_url=None,
                                      workspace_id=None, auto_join=True, calendar_uid=None,
-                                     workspace_source=None, attendees=None) -> dict:
+                                     workspace_source=None, attendees=None, spawn=None) -> dict:
         """Insert a PLANNED row (intent status, no bot). Takes the SAME per-user advisory lock as
         ``bot_spawn.create_meeting_guarded`` so planned-create serializes with concurrent spawns
         and calendar sync; the unique partial index remains the DB-level backstop (→ duplicate)."""
@@ -914,6 +914,8 @@ class SqlAlchemyTranscriptStore:
             data["calendar_uid"] = calendar_uid
         if attendees:
             data["attendees"] = attendees
+        if spawn:
+            data["spawn"] = spawn
         status = "scheduled" if scheduled_at else "idle"
 
         async with self._session_factory() as db:
@@ -1020,6 +1022,11 @@ class SqlAlchemyTranscriptStore:
                     data.pop("attendees", None)
             if "auto_join" in updates:
                 data["auto_join"] = bool(updates["auto_join"])
+            if "spawn" in updates:
+                if updates["spawn"]:
+                    data["spawn"] = updates["spawn"]
+                else:
+                    data.pop("spawn", None)
             if "calendar_uid" in updates:
                 if updates["calendar_uid"]:
                     data["calendar_uid"] = updates["calendar_uid"]

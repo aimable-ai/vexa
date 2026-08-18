@@ -148,6 +148,15 @@ services:
       - BOT_SPEAKER_CONFIRM_THRESHOLD=${BOT_SPEAKER_CONFIRM_THRESHOLD:-}
       - BOT_SPEAKER_MAX_BUFFER_SEC=${BOT_SPEAKER_MAX_BUFFER_SEC:-}
       - BOT_SPEAKER_IDLE_TIMEOUT_SEC=${BOT_SPEAKER_IDLE_TIMEOUT_SEC:-}
+      # Fork: captured-signal.v1 recording (offline exact replay), per-bot log persistence, and the
+      # whisper endpoint the live engine repairs language drift on. Empty = off. VEXA_WORKLOAD_LOG_DIR
+      # is an in-container path — bind a host volume on the runtime service to keep the logs.
+      - VEXA_CAPTURE_SIGNAL=${VEXA_CAPTURE_SIGNAL:-}
+      - VEXA_CAPTURE_SIGNAL_DIR=${VEXA_CAPTURE_SIGNAL_DIR:-}
+      - VEXA_CAPTURE_SIGNAL_HOST_DIR=${VEXA_CAPTURE_SIGNAL_HOST_DIR:-}
+      - VEXA_WORKLOAD_LOG_DIR=${VEXA_WORKLOAD_LOG_DIR:-}
+      - STT_LANGUAGE_REPAIR_URL=${STT_LANGUAGE_REPAIR_URL:-}
+      - STT_LANGUAGE_REPAIR_TOKEN=${STT_LANGUAGE_REPAIR_TOKEN:-}
       - VEXA_AGENT_SRC_MOUNT=${VEXA_AGENT_SRC_MOUNT:-}
       - REDIS_URL=redis://redis:6379/0
       # The Runtime brokers model credentials into spawned agents. Subscription credentials may be

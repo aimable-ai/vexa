@@ -33,6 +33,7 @@
         "end": { "type": "number" },
         "language": { "type": ["string", "null"] },
         "completed": { "type": "boolean", "description": "true = confirmed, false = live draft/pending" },
+        "stable": { "type": "boolean", "description": "on a pending draft: the text is already model-committed (live engines) — consumers may act on it before the segment closes" },
         "absolute_start_time": { "type": "string", "format": "date-time" },
         "absolute_end_time": { "type": "string", "format": "date-time" },
         "source": { "$ref": "#/$defs/Source" },

@@ -48,6 +48,8 @@ export interface Reson8TranscriberConfig {
   now?: () => number;
   /** 0 disables the internal timer (tests drive sweep() directly). Default 200. */
   sweepIntervalMs?: number;
+  /** Silence-tail ceiling after speech (ms); the tail stops as soon as the turn finalizes. Default 5000. */
+  tailBudgetMs?: number;
 }
 
 /** The slice of a WebSocket this engine uses — injectable for tests. */
@@ -72,9 +74,17 @@ export class Reson8Transcriber {
   private sessionStartWallMs = 0;
   private lastAudioWallMs = 0;
   private lastAudioTsMs = 0;
-  /** Capture-clock epoch at session open — maps server-relative start_ms to epoch. */
+  /** Capture-clock epoch at session open (fallback when a message carries no timing). */
   private sessionStartTsMs = 0;
-  private tailSentMs = TAIL_BUDGET_MS;
+  /** Server audio-time → capture-time ledger. The server's start_ms counts AUDIO SENT, and we
+   *  send only speech (capture is VAD-gated) plus bounded silence tails — so audio time runs
+   *  slower than the capture clock by every skipped pause. Each entry: audio-time offset at
+   *  which a sent buffer begins, its capture ts, and its duration. Silence tails advance audio
+   *  time while capture time stands still (they carry the last speech ts). */
+  private sent: Array<{ atMs: number; tsMs: number; durMs: number; silent?: boolean }> = [];
+  private sentMs = 0;
+  private readonly tailBudgetMs: number;
+  private tailSentMs: number;
   private seq = 0;
   private turnCounter = 0;
   private unresolved: TurnRecord[] = [];
@@ -83,6 +93,8 @@ export class Reson8Transcriber {
 
   constructor(private cfg: Reson8TranscriberConfig, private cb: VoxtralTranscriberCallbacks) {
     this.now = cfg.now ?? Date.now;
+    this.tailBudgetMs = cfg.tailBudgetMs ?? TAIL_BUDGET_MS;
+    this.tailSentMs = this.tailBudgetMs;
     this.binder = new ClusterNameBinder({
       onLateResolve: (clusterId, name) => this.applyLateResolve(clusterId, name),
     });
@@ -102,12 +114,41 @@ export class Reson8Transcriber {
     this.lastAudioTsMs = tsMs;
     this.tailSentMs = 0;   // real speech — this turn gets a fresh tail
     const pcm16 = float32ToPcm16(pcm);
+    this.ledger(tsMs, pcm16.length / 2 / SAMPLE_RATE * 1000);
     if (this.ws && this.wsReady) {
       try { this.ws.send(pcm16); } catch (e) { this.cb.onError?.(e); }
     } else {
       this.pendingAudio.push(pcm16);
       if (!this.ws) this.connect(tsMs);
     }
+  }
+
+  private ledger(tsMs: number, durMs: number, silent = false): void {
+    this.sent.push({ atMs: this.sentMs, tsMs, durMs, silent });
+    this.sentMs += durMs;
+    // Keep ~10 min of audio time; finals never reference older audio.
+    while (this.sent.length > 2 && this.sentMs - this.sent[0].atMs > 600_000) this.sent.shift();
+  }
+
+  /** Server audio-time (ms since session open) → capture epoch ms. A time that lands in a
+   *  silence tail has no capture instant of its own: a segment START there snaps forward to the
+   *  next real audio (the server dates a new utterance from the quiet before it), a segment END
+   *  snaps back to the last real audio — otherwise windows stretch across pauses and the binder
+   *  sees them as mixed/uncovered. */
+  private captureTime(audioMs: number, edge: 'start' | 'end' = 'start'): number {
+    const L = this.sent;
+    if (!L.length) return this.sessionStartTsMs + audioMs;
+    // Binary search the last entry starting at or before audioMs.
+    let lo = 0, hi = L.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (L[mid].atMs <= audioMs) lo = mid; else hi = mid - 1; }
+    let i = lo;
+    if (L[i].silent) {
+      if (edge === 'start') { while (i < L.length - 1 && L[i].silent) i++; if (!L[i].silent) return L[i].tsMs; }
+      else { while (i > 0 && L[i].silent) i--; if (!L[i].silent) return L[i].tsMs + L[i].durMs; }
+      i = lo;
+    }
+    const e = L[i];
+    return e.tsMs + Math.min(Math.max(0, audioMs - e.atMs), e.durMs);
   }
 
   recordHint(name: string, kind: HintKind, tMs: number, isEnd?: boolean): void {
@@ -136,6 +177,7 @@ export class Reson8Transcriber {
       sample_rate: String(SAMPLE_RATE),
       channels: '1',
       include_timestamps: 'true',
+      include_words: 'true',
       include_interim: 'true',
     });
     const lang = (this.cb.language ?? '').toLowerCase().slice(0, 2);
@@ -155,6 +197,10 @@ export class Reson8Transcriber {
       this.wsReady = true;
       this.sessionStartWallMs = this.now();
       this.sessionStartTsMs = tsMs;
+      // Audio time restarts with the session; whatever was queued is the first thing sent.
+      const queued = this.pendingAudio.length ? this.sent.slice(-this.pendingAudio.length) : [];
+      this.sent = []; this.sentMs = 0;
+      for (const q of queued) this.ledger(q.tsMs, q.durMs, q.silent);
       for (const pcm of this.pendingAudio.splice(0)) {
         try { ws.send(pcm); } catch { /* close event follows */ }
       }
@@ -188,8 +234,8 @@ export class Reson8Transcriber {
     const hasTiming = typeof msg.start_ms === 'number' && typeof msg.duration_ms === 'number';
     // Server times are relative to session open; map onto the CAPTURE clock so
     // binder matching and transcript timestamps stay in the epoch domain.
-    const startMs = hasTiming ? this.sessionStartTsMs + (msg.start_ms as number) : this.sessionStartTsMs;
-    const endMs = hasTiming ? startMs + (msg.duration_ms as number) : (this.lastAudioTsMs || startMs + 1);
+    const startMs = hasTiming ? this.captureTime(msg.start_ms as number, 'start') : this.sessionStartTsMs;
+    const endMs = hasTiming ? Math.max(startMs + 1, this.captureTime((msg.start_ms as number) + (msg.duration_ms as number), 'end')) : (this.lastAudioTsMs || startMs + 1);
     if (msg.is_final === false) {
       const speaker = this.resolveName(startMs, Math.max(endMs, startMs + 1), false);
       if (this.pendingSpeaker && this.pendingSpeaker !== speaker) this.cb.clearPending(this.pendingSpeaker);
@@ -200,23 +246,27 @@ export class Reson8Transcriber {
       }]);
       return;
     }
-    if (isJunk(text)) {
-      this.cb.log?.(`[reson8] [FILTERED] junk: "${text.slice(0, 60)}"`);
-      return;
-    }
     // Turn is closed — stop feeding silence (the tail budget only pays out on
     // the slowest endpoints).
-    this.tailSentMs = TAIL_BUDGET_MS;
-    const clusterId = `seg_${this.turnCounter++}`;
-    const seg: VoxtralSegment = {
-      text, startMs, endMs, language: this.cb.language ?? '',
-      segmentId: `${clusterId}:${this.seq++}`,
-    };
-    const res = this.binder.resolve({ clusterId, tStartMs: startMs, tEndMs: endMs });
-    this.rememberTurn(clusterId, res.speakerName, seg);
-    this.cb.log?.(`[reson8] CONFIRMED ${res.speakerName} | "${text.slice(0, 60)}"`);
-    this.cb.publish(res.speakerName, [seg], []);
+    this.tailSentMs = this.tailBudgetMs;
     this.pendingSpeaker = null;
+    // Word times are server audio-time like start_ms; map each piece onto the capture clock.
+    const pieces = hasTiming
+      ? splitFinal(msg, text, msg.start_ms as number, (msg.start_ms as number) + (msg.duration_ms as number))
+          .map((p) => { const a = this.captureTime(p.a, 'start'); return { text: p.text, a, b: Math.max(a + 1, this.captureTime(p.b, 'end')) }; })
+      : [{ text, a: startMs, b: endMs }];
+    for (const p of pieces) {
+      if (isJunk(p.text)) { this.cb.log?.(`[reson8] [FILTERED] junk: "${p.text.slice(0, 60)}"`); continue; }
+      const clusterId = `seg_${this.turnCounter++}`;
+      const seg: VoxtralSegment = {
+        text: p.text, startMs: p.a, endMs: p.b, language: this.cb.language ?? '',
+        segmentId: `${clusterId}:${this.seq++}`,
+      };
+      const res = this.binder.resolve({ clusterId, tStartMs: p.a, tEndMs: p.b });
+      this.rememberTurn(clusterId, res.speakerName, seg);
+      this.cb.log?.(`[reson8] CONFIRMED ${res.speakerName} | "${p.text.slice(0, 60)}"`);
+      this.cb.publish(res.speakerName, [seg], []);
+    }
   }
 
   private resolveName(tStartMs: number, tEndMs: number, recordVote: boolean): string {
@@ -283,18 +333,44 @@ export class Reson8Transcriber {
       return;
     }
     // Post-speech silence, bounded: enough for the server to endpoint the turn.
-    if (this.wsReady && this.lastAudioWallMs > 0 && quietMs >= TAIL_START_MS && this.tailSentMs < TAIL_BUDGET_MS) {
-      try { this.ws.send(this.silenceFrame); this.tailSentMs += TAIL_FRAME_MS; } catch { /* close event follows */ }
+    if (this.wsReady && this.lastAudioWallMs > 0 && quietMs >= TAIL_START_MS && this.tailSentMs < this.tailBudgetMs) {
+      try { this.ws.send(this.silenceFrame); this.tailSentMs += TAIL_FRAME_MS; this.ledger(this.lastAudioTsMs, TAIL_FRAME_MS, true); } catch { /* close event follows */ }
     }
   }
 }
 
+interface Reson8Word { text?: unknown; start_ms?: unknown; duration_ms?: unknown }
 interface Reson8Message {
   type?: string;
   text?: unknown;
   is_final?: boolean;
   start_ms?: unknown;
   duration_ms?: unknown;
+  words?: unknown;
+}
+
+/** Split gap between words that ends a sub-segment (matches the live engines' turn gap). */
+const SPLIT_GAP_MS = 700;
+const SENTENCE_END = /[.!?…]["')\]]?$/;
+
+/** A long server final (RESON8 endpoints only on longer pauses, merging sentences and even
+ *  speakers) → sub-segments at sentence ends / word gaps, each on its own audio window, so the
+ *  binder names them individually. Falls back to one piece without usable words. */
+function splitFinal(msg: Reson8Message, text: string, startMs: number, endMs: number): Array<{ text: string; a: number; b: number }> {
+  const words = Array.isArray(msg.words) ? (msg.words as Reson8Word[]).filter((w) => typeof w.text === 'string' && typeof w.start_ms === 'number' && typeof w.duration_ms === 'number') : [];
+  if (words.length < 2) return [{ text, a: startMs, b: endMs }];
+  const out: Array<{ text: string; a: number; b: number }> = [];
+  let cur: string[] = []; let a = words[0].start_ms as number; let prevEnd = a;
+  for (const w of words) {
+    const ws = w.start_ms as number, we = ws + (w.duration_ms as number);
+    const gap = ws - prevEnd;
+    if (cur.length && (gap >= SPLIT_GAP_MS || SENTENCE_END.test(cur[cur.length - 1]))) {
+      out.push({ text: cur.join(' '), a, b: prevEnd }); cur = []; a = ws;
+    }
+    cur.push(String(w.text).trim()); prevEnd = we;
+  }
+  if (cur.length) out.push({ text: cur.join(' '), a, b: prevEnd });
+  return out;
 }
 
 function parseMessage(data: unknown): Reson8Message | null {

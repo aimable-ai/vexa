@@ -95,6 +95,9 @@ def _coerce_segment(raw: dict) -> Optional[dict]:
         "language": raw.get("language"),
         "speaker": raw.get("speaker"),
         "completed": completed,
+        # Live-engine drafts carry stable=True (text already model-committed): consumers act on
+        # them before the segment closes, so the flag rides through to the mutable publish.
+        **({"stable": True} if not completed and raw.get("stable") is True else {}),
         "source": source,
         "absolute_start_time": raw.get("absolute_start_time"),
         "absolute_end_time": raw.get("absolute_end_time"),

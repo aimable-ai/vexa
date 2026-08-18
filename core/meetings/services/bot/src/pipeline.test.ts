@@ -148,6 +148,27 @@ async function main(): Promise<void> {
     check('no transcriptionModel → default whisper-1 (wire unchanged)', modelParts[1] === 'whisper-1', JSON.stringify(modelParts[1]));
   }
 
+  // ── 4b) createTranscribe prepends invocation.initialPrompt to whisper's single prompt slot:
+  //     bias leads, the lane's continuity context follows; no bias → prompt is the context alone. ──
+  {
+    const realFetch = globalThis.fetch;
+    const promptParts: Array<string | null> = [];
+    (globalThis as any).fetch = async (_url: unknown, init: { body: Buffer }) => {
+      const m = Buffer.from(init.body).toString('latin1').match(/name="prompt"\r\n\r\n([^\r]*)\r\n/);
+      promptParts.push(m ? m[1] : null);
+      return new Response(JSON.stringify({ text: '', language: 'en', duration: 0.1, segments: [] }), { status: 200 });
+    };
+    const pcm = new Float32Array(1600).fill(0.05);
+    const biased = createTranscribe(baseInv({ transcriptionServiceUrl: 'http://stt.test', initialPrompt: 'Aimable, Bolsius, Roundtable' }));
+    await biased(pcm, 'zo gezegd.');
+    await biased(pcm);
+    await createTranscribe(baseInv({ transcriptionServiceUrl: 'http://stt.test' }))(pcm, 'zo gezegd.');
+    (globalThis as any).fetch = realFetch;
+    check('initialPrompt leads, context follows', promptParts[0] === 'Aimable, Bolsius, Roundtable zo gezegd.', JSON.stringify(promptParts[0]));
+    check('initialPrompt alone when no context', promptParts[1] === 'Aimable, Bolsius, Roundtable', JSON.stringify(promptParts[1]));
+    check('no initialPrompt → context alone (wire unchanged)', promptParts[2] === 'zo gezegd.', JSON.stringify(promptParts[2]));
+  }
+
   // ── 5) MIXED LANE (Teams/Zoom) speaker-label boundary (#890): a turn the mixed lane has NOT
   //     yet attributed publishes under its provisional cluster id (speaker 'seg_N'). At the bot
   //     boundary that must become the stable 'Speaker' label — NEVER the seg_N string as a display

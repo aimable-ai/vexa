@@ -93,8 +93,22 @@ function harness(language?: string) {
   assert.equal(conf.length, 1);
   assert.equal(conf[0].segs[0].text, 'Dit is een test.');
   assert.equal(conf[0].segs[0].startMs, 2_000_000_000_000 + 200, 'server-relative start mapped to capture epoch');
-  assert.equal(conf[0].segs[0].endMs, 2_000_000_000_000 + 1600);
+  // Audio time counts what was SENT: 300 ms at T0, then 500 ms at T0+1000 — audio-time 1600
+  // lies past the 800 ms sent, so it clamps to the end of the last sent buffer (T0+1500).
+  assert.equal(conf[0].segs[0].endMs, 2_000_000_000_000 + 1500);
   assert.equal(conf[0].speaker, 'Arjé Cahn', 'hint named the turn');
+  await h.t.dispose();
+}
+
+// ── audio-time ledger: skipped pauses must not drag server timing behind the capture clock ──
+{
+  const h = harness('nl');
+  h.feed(1000); h.open();                       // audio 0–1000 ↔ T0..T0+1000
+  h.tick(30_000); h.feed(1000);                 // 29 s pause never sent; audio 1000–2000 ↔ T0+30000..
+  h.socket().message({ type: 'transcript', text: 'Na de pauze.', is_final: true, start_ms: 1200, duration_ms: 500 });
+  const seg = h.confirmed()[0].segs[0];
+  assert.equal(seg.startMs, 2_000_000_000_000 + 30_200, 'audio-time 1200 = 200 ms into the post-pause buffer');
+  assert.equal(seg.endMs, 2_000_000_000_000 + 30_700);
   await h.t.dispose();
 }
 
@@ -153,6 +167,38 @@ function harness(language?: string) {
   assert.equal(h.confirmed().length, 0, 'repetition loop filtered');
   h.socket().message({ type: 'transcript', text: 'Ja.', is_final: true, start_ms: 600, duration_ms: 200 });
   assert.equal(h.confirmed().length, 1, 'single-word final survives');
+  await h.t.dispose();
+}
+
+// ── word-split: one long server final → sentence/gap pieces, each named on its own window ──
+{
+  const h = harness('nl');
+  h.feed(6000); h.open();
+  h.t.recordHint('Arjé Cahn', 'dom-active', 2_000_000_000_000 + 100);
+  h.t.recordHint('Arjé Cahn', 'dom-active', 2_000_000_000_000 + 2400, true);
+  h.t.recordHint('Bart Evers', 'dom-active', 2_000_000_000_000 + 3400);
+  h.t.recordHint('Bart Evers', 'dom-active', 2_000_000_000_000 + 5800, true);
+  const w = (text: string, s: number, d: number) => ({ text, start_ms: s, duration_ms: d });
+  h.socket().message({ type: 'transcript', is_final: true, start_ms: 0, duration_ms: 6000,
+    text: 'Dat is klaar. Ja precies dat bedoel ik',
+    words: [w('Dat', 0, 300), w('is', 300, 300), w('klaar.', 600, 400), w('Ja', 3400, 300), w('precies', 3700, 500), w('dat', 4200, 300), w('bedoel', 4500, 400), w('ik', 4900, 300)] });
+  const conf = h.confirmed();
+  assert.equal(conf.length, 2, 'split at the sentence end + 2.4 s gap');
+  assert.deepEqual(conf.map((c) => [c.speaker, c.segs[0].text]), [['Arjé Cahn', 'Dat is klaar.'], ['Bart Evers', 'Ja precies dat bedoel ik']]);
+  assert.equal(conf[1].segs[0].startMs, 2_000_000_000_000 + 3400);
+  await h.t.dispose();
+}
+
+// ── silence-tail snap: a start_ms inside the tail we sent must date the NEXT speech, not the pause ──
+{
+  const h = harness('nl');
+  h.feed(1000); h.open();                                   // audio 0–1000 ↔ T0..T0+1000
+  h.tick(800); for (let k = 0; k < 5; k++) { h.t.sweep(); }  // quiet ≥700 ms → 5 tail frames = audio 1000–2000 at T0+0 (silent)
+  h.tick(9200); h.feed(1000);                               // 10 s later real speech: audio 2000–3000 ↔ T0+10000..
+  h.socket().message({ type: 'transcript', text: 'Nieuwe beurt.', is_final: true, start_ms: 1600, duration_ms: 1200 });
+  const seg = h.confirmed()[0].segs[0];
+  assert.equal(seg.startMs, 2_000_000_000_000 + 10_000, 'start inside the tail snaps to the next real audio');
+  assert.equal(seg.endMs, 2_000_000_000_000 + 10_800);
   await h.t.dispose();
 }
 

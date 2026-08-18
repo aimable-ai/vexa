@@ -10,7 +10,8 @@
  *   5. single-word segments survive ("Ja.") — no short-segment hallucination drop
  *   6. primer transcript discarded; primer residue never published
  *   7. provisional turn → late hint rename repaints the same segment ids
- *   8. context guard recycles the session at the audio budget on a pause
+ *   8. context guard (opt-in) recycles the session at the audio budget on a pause;
+ *      the default policy keeps ONE session across long speech and multi-minute pauses
  *   9. pending drafts publish under the live-resolved name (stable text)
  */
 import assert from 'node:assert/strict';
@@ -36,7 +37,7 @@ const isAllZero = (b: Buffer): boolean => b.every((x) => x === 0);
 
 interface Published { speaker: string; segs: VoxtralSegment[]; kind: 'confirmed' | 'pending' | 'rename' }
 
-function harness(language?: string) {
+function harness(language?: string, cfg: { idleTimeoutMs?: number; sessionMaxAudioSec?: number } = {}) {
   let clock = 1_000_000_000_000;   // fixed epoch base — no Date.now in tests
   const out: Published[] = [];
   const renames: Array<{ from: string; to: string; ids: string[] }> = [];
@@ -47,6 +48,7 @@ function harness(language?: string) {
       url: 'ws://mock',
       sweepIntervalMs: 0,
       now: () => clock,
+      ...cfg,
       transportFactory: (_cfg: LiveTransportConfig, ev: LiveTransportEvents) => {
         transport = new MockTransport(ev);
         transports.push(transport);
@@ -201,9 +203,23 @@ function harness(language?: string) {
   void segIds;
 }
 
-// ── 8: context guard recycles at the audio budget on a pause ─────────────────
+// ── 6b: a primer transcript without a period cannot swallow the speaker's first words
 {
-  const h = harness();
+  const h = harness('nl');
+  h.feed(300); await h.flushMicrotasks();
+  h.transport().delta('Dit is een Nederlandse vergadering');   // no sentence end
+  h.tick(300); h.feed(300);
+  h.transport().delta(' Ticket 1070, Alex, doe die maar op vier punten.');
+  h.tick(900); h.t.sweep();
+  const conf = h.confirmed();
+  assert.equal(conf.length, 1, 'real speech after an unterminated primer is published');
+  assert.match(conf[0].segs[0].text, /Ticket 1070/);
+  await h.t.dispose();
+}
+
+// ── 8: context guard (opt-in) recycles at the audio budget on a pause ────────
+{
+  const h = harness(undefined, { sessionMaxAudioSec: 240 });
   h.feed(100); await h.flushMicrotasks();
   assert.equal(h.transports.length, 1);
   // Pump 241s of audio in slices, keeping the clock moving.
@@ -213,6 +229,21 @@ function harness(language?: string) {
   h.t.sweep();                        // context guard path
   assert.equal(h.transports.length, 2, 'session recycled onto a fresh transport');
   assert.ok(h.transports[0].closed, 'old transport closed');
+  await h.t.dispose();
+}
+
+// ── 8b: default policy — no recycle on long speech, no idle close under 5 min ─
+{
+  const h = harness();
+  h.feed(100); await h.flushMicrotasks();
+  for (let i = 0; i < 150; i++) { h.tick(4000); h.feed(4000); }   // 10 min of speech
+  h.tick(900); h.t.sweep(); h.t.sweep();
+  assert.equal(h.transports.length, 1, 'no context-guard recycle by default');
+  h.tick(240_000); h.t.sweep();                                     // 4 min pause
+  assert.equal(h.transports.length, 1, 'no idle close under the 5 min default');
+  assert.ok(!h.transports[0].closed, 'transport still open');
+  h.tick(120_000); h.t.sweep();                                     // 6 min pause
+  assert.ok(h.transports[0].closed, 'idle close after 5 min');
   await h.t.dispose();
 }
 

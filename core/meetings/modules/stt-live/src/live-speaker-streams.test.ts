@@ -69,6 +69,31 @@ assert.deepEqual(
   'each channel confirmed under its own glow name',
 );
 
+// 5: the glow END hint — a name that switches (or goes dark >700 ms) ends its hint turn,
+// so the binder is not left with an open turn running on grace after the speaker stopped.
+const streams2 = new LiveSpeakerStreams(
+  { engine: 'voxtral', url: 'ws://mock' },
+  { publish: () => {}, publishPending: () => {}, clearPending: () => {}, rename: () => {} },
+);
+// Spy on the channel-engine surface (END hints report no outcome, so observe recordHint itself).
+const spy: Array<{ name: string; tMs: number; isEnd?: boolean }> = [];
+(streams2 as any).ensure = async (ch: number) => {
+  const e = { feedAudio() {}, recordHint(name: string, _k: string, tMs: number, isEnd?: boolean) { spy.push({ name, tMs, isEnd }); }, async dispose() {} };
+  (streams2 as any).channels.set(ch, e); return e;
+};
+let t = clock;
+streams2.feedAudio(0, 'Arjé Cahn', pcm(256), t); await flush();
+streams2.feedAudio(0, 'Arjé Cahn', pcm(256), t += 256);
+streams2.feedAudio(0, 'Bart Evers', pcm(256), t += 256);          // switch → END Arjé @ last Arjé frame, then Bart
+streams2.feedAudio(0, undefined, pcm(256), t += 256);             // dark, within gap → nothing
+streams2.feedAudio(0, undefined, pcm(256), t += 1000);            // dark > 700 ms → END Bart @ his last frame
+assert.deepEqual(
+  spy.map((h) => `${h.name}${h.isEnd ? ':END' : ''}@${h.tMs - clock}`),
+  ['Arjé Cahn@0', 'Arjé Cahn@256', 'Arjé Cahn:END@256', 'Bart Evers@512', 'Bart Evers:END@512'],
+  'per-frame hints plus explicit END on switch / dark gap',
+);
+await streams2.dispose();
+
 // 4: dispose drains and closes every channel transport
 await streams.dispose();
 assert.ok(transports.every((t) => t.closed), 'all channel transports closed');

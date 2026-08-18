@@ -48,6 +48,8 @@ const KIND_LAG_MS: Record<HintKind, number> = {
  *  Must exceed the heartbeat interval (tolerate a missed beat) — 2× = 4s. This is
  *  what gives a NEW active speaker priority over the previous one's lingering hint. */
 const OPEN_TURN_GRACE_MS = 4000;
+/** A same-name hint within this gap extends the open turn instead of restarting it. */
+const HINT_EXTEND_MAX_MS = 1500;
 const DEFAULT_MATCH_TOLERANCE_MS = 2500;
 /** Overlap difference (ms) within which two candidate names count as a "tie" and
  *  recency decides — prevents a previous speaker's still-open hint turn from
@@ -128,6 +130,8 @@ interface HintTurn {
   tStartMs: number;
   /** Lag-corrected end; undefined while the turn is open. */
   tEndMs?: number;
+  /** Lag-corrected time of the latest same-name hint that EXTENDED this open turn. */
+  lastSeenMs: number;
 }
 
 export class ClusterNameBinder {
@@ -172,13 +176,19 @@ export class ClusterNameBinder {
       }
       return;
     }
-    // Refresh THIS name's open turn (close + reopen so its window stays fresh against
-    // the grace), leaving OTHER names' open turns untouched → concurrent speakers.
+    // Refresh THIS name's open turn, leaving OTHER names' open turns untouched → concurrent
+    // speakers. A dense hint stream (a glow riding every frame) EXTENDS the open turn — closing
+    // and reopening it per hint would leave a trail of sub-second turns the flicker filter drops
+    // and an open turn whose grace window ends 4 s after its first hint. A sparse re-hint (a
+    // DOM poll firing again after a long silence) still closes the old turn here and opens a new one.
     for (let i = log.length - 1; i >= 0; i--) {
       const turn = log[i];
-      if (turn.name === ev.name && turn.tEndMs === undefined) { turn.tEndMs = t; break; }
+      if (turn.name === ev.name && turn.tEndMs === undefined) {
+        if (t - turn.lastSeenMs <= HINT_EXTEND_MAX_MS) { turn.lastSeenMs = Math.max(turn.lastSeenMs, t); return; }
+        turn.tEndMs = t; break;
+      }
     }
-    log.push({ name: ev.name, tStartMs: t });
+    log.push({ name: ev.name, tStartMs: t, lastSeenMs: t });
     if (log.length > this.hintLogLimit) log.splice(0, log.length - this.hintLogLimit);
   }
 
@@ -225,7 +235,7 @@ export class ClusterNameBinder {
         // FLICKER DEBOUNCE: a closed turn shorter than the window is a transient (noise
         // burst / UI blip), never a real turn — skip it so it can't steal a segment.
         if (turn.tEndMs !== undefined && turn.tEndMs - turn.tStartMs < FLICKER_MIN_MS) continue;
-        const turnEnd = turn.tEndMs ?? (turn.tStartMs + OPEN_TURN_GRACE_MS);
+        const turnEnd = turn.tEndMs ?? (turn.lastSeenMs + OPEN_TURN_GRACE_MS);
         const o = Math.max(0, Math.min(turnEnd, windowEnd) - Math.max(turn.tStartMs, windowStart));
         if (o <= 0) continue;
         const support = Math.max(0, Math.min(turnEnd, supportEnd) - Math.max(turn.tStartMs, supportStart));

@@ -50,4 +50,38 @@ const baseInv = {
   await p.stop();
 }
 
+// Live-engine drafts publish as stable (model-committed): pending → stable:true, confirmed → no flag.
+{
+  const got: Array<{ completed: boolean; stable?: boolean }> = [];
+  const capture: TranscriptSink = { publish: async (seg) => { got.push({ completed: seg.completed, stable: seg.stable }); } };
+  const p = createBotPipeline(baseInv, capture, {
+    createMixedTranscriber: async (cb) => {
+      const seg = { text: 'Go', startMs: 1_000_000, endMs: 1_000_500, language: 'nl', segmentId: 's1' };
+      cb.publishPending('Ludger', [seg]);
+      cb.publish('Ludger', [seg], []);
+      return { feedAudio: () => {}, recordHint: () => {}, dispose: async () => {} };
+    },
+  });
+  await p.start();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(got, [{ completed: false, stable: true }, { completed: true, stable: undefined }]);
+  await p.stop();
+}
+
+// The chunked whisper lane never marks drafts stable.
+{
+  const got: Array<{ completed: boolean; stable?: boolean }> = [];
+  const capture: TranscriptSink = { publish: async (seg) => { got.push({ completed: seg.completed, stable: seg.stable }); } };
+  const p = createBotPipeline({ ...baseInv, transcriptionServiceUrl: 'http://transcription:8083' } as Invocation, capture, {
+    createMixedTranscriber: async (cb) => {
+      cb.publishPending('Ludger', [{ text: 'Go', startMs: 1_000_000, endMs: 1_000_500, language: 'nl', segmentId: 's1' }]);
+      return { feedAudio: () => {}, recordHint: () => {}, dispose: async () => {} };
+    },
+  });
+  await p.start();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(got, [{ completed: false, stable: undefined }]);
+  await p.stop();
+}
+
 console.log('live-engine.test: OK');

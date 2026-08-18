@@ -30,7 +30,7 @@ import { createHttpLifecycleSink } from './adapters/lifecycle-http.js';
 import { createRedisTranscriptSink, redisClientFrom } from './adapters/transcript-redis.js';
 import { createRedisActsSource, redisActsClientFrom } from './adapters/acts-redis.js';
 import { createBrowserJoinDriver } from './join-driver.js';
-import { createBotPipeline, createLivePipeline, createTranscribe, serr, type BotPipeline } from './pipeline.js';
+import { createBotPipeline, createLivePipeline, createTranscribe, liveEngineForUrl, serr, type BotPipeline } from './pipeline.js';
 import { createBotRecordingSink } from './recording.js';
 import { createCaptureSignalRecorder, wrapTranscribeWithTap, type CaptureSignalRecorder } from './telemetry.js';
 import { createSttFaultReporter } from './stt-faults.js';
@@ -212,7 +212,10 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     join = createBrowserJoinDriver(session.page, inv);
     botPipeline = createBotPipeline(inv, transcript, {
       // When recording, tee every STT round-trip to <session>.stt.jsonl (the capture/STT/assembly bisect).
-      transcribe: signalRecorder ? wrapTranscribeWithTap(createTranscribe(inv), signalRecorder.path) : undefined,
+      // Chunked-whisper lane only: an injected transcribe pins that lane, and a live engine (voxtral/
+      // reson8) has no batch round-trip to tap — passing one would silently demote it to chunked.
+      transcribe: signalRecorder && !liveEngineForUrl(inv.transcribeEnabled === false ? undefined : inv.transcriptionServiceUrl)
+        ? wrapTranscribeWithTap(createTranscribe(inv), signalRecorder.path) : undefined,
       config: speakerStreamConfig,
       // Every STT fault is counted and carried out on the terminal lifecycle event (see
       // sttFaults). Logging it here as well keeps the raw line for anyone tailing the container.

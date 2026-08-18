@@ -24,3 +24,5 @@ export { LiveSpeakerStreams } from './live-speaker-streams.js';
 export type { LiveSpeakerStreamsConfig, LiveSpeakerStreamsCallbacks, LiveEngineKind } from './live-speaker-streams.js';
 export { openLiveTransport, parseLiveDelta } from './live-transport.js';
 export type { LiveTransport, LiveTransportConfig, LiveTransportEvents, TransportFactory } from './live-transport.js';
+export { LanguageRepair, isLanguageDrift, languageShares } from './language-repair.js';
+export type { LanguageRepairConfig, RepairLanguage } from './language-repair.js';

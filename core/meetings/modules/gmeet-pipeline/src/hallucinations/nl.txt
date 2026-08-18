@@ -1,0 +1,19 @@
+# Dutch whisper hallucinations on near-silent / sub-second windows
+# Source: kkv-bsjw-vwo 2026-08-17 replay (whisper large-v3-turbo, gmeet lane): "Dank u wel." ×54 in 27 min
+Dank u wel.
+Dank u wel
+Dankuwel.
+Dankjewel.
+Dank je wel.
+Bedankt voor het kijken.
+Bedankt voor het kijken
+Tot de volgende keer.
+Tot ziens.
+Ondertiteling door de Amara.org gemeenschap
+Ondertiteld door de Amara.org gemeenschap
+Ondertitels ingediend door de Amara.org gemeenschap
+Abonneer je op mijn kanaal.
+Deze video is gemaakt door de VPRO.
+TV Gelderland 2021
+Doei!
+Doei.

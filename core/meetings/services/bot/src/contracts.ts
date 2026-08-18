@@ -131,6 +131,8 @@ export interface TranscriptSegment {
   end: number;
   language?: string | null;
   completed: boolean;
+  /** Pending draft whose text is already model-committed (live engines) — safe to act on early. */
+  stable?: boolean;
   absolute_start_time?: string;
   absolute_end_time?: string;
   source?: Source;

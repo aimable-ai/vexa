@@ -92,6 +92,25 @@ def _production_transcribe_gate() -> Optional[str]:
     return None
 
 
+def _spawn_kwargs(spawn: dict) -> dict:
+    """data.spawn (planner-pinned per-meeting options, see collector POST /meetings) → the
+    request_bot keyword arguments a manual POST /bots would carry. Unknown keys are ignored."""
+    out: dict = {}
+    for k in ("language", "task", "bot_name", "passcode", "initial_prompt"):
+        if spawn.get(k):
+            out[k] = spawn[k]
+    if spawn.get("transcription_tier"):
+        out["transcription_tier"] = spawn["transcription_tier"]
+    for k in ("recording_enabled", "transcribe_enabled"):
+        if isinstance(spawn.get(k), bool):
+            out[k] = spawn[k]
+    if spawn.get("transcription_service_url"):
+        out["transcription_service_url_override"] = spawn["transcription_service_url"]
+        out["transcription_service_token_override"] = spawn.get("transcription_service_token")
+        out["transcription_model_override"] = spawn.get("transcription_model")
+    return out
+
+
 async def auto_join_tick(
     repo,
     runtime,
@@ -184,6 +203,7 @@ async def auto_join_tick(
                 continue
 
         data = row.get("data") if isinstance(row.get("data"), dict) else {}
+        spawn = data.get("spawn") if isinstance(data.get("spawn"), dict) else {}
         try:
             await request_bot(
                 repo, runtime,
@@ -192,6 +212,7 @@ async def auto_join_tick(
                 platform=row["platform"],
                 native_meeting_id=row["native_meeting_id"],
                 meeting_url=data.get("constructed_meeting_url"),
+                **_spawn_kwargs(spawn),
                 max_concurrent=ctx.get("max_concurrent"),
                 webhook_url=ctx.get("webhook_url"),
                 webhook_secret=ctx.get("webhook_secret"),
