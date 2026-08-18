@@ -145,7 +145,11 @@ export interface CsrcRecord {
   audioLevel?: number;
   /** The media clock of the contribution, for offline alignment against the audio. */
   rtpTimestamp?: number;
-  lane: 'mixed';
+  /** The receiver slot the contribution arrived on (gmeet lane: Meet's three server-rewritten
+   *  SSRC slots) — track id prefix + slot SSRC where the UA supplies them. */
+  track?: string;
+  ssrc?: number;
+  lane: 'gmeet' | 'mixed';
 }
 
 /** A telemetry sink that can ALSO store CSRC transitions. Structural + OPTIONAL for the same
@@ -255,8 +259,9 @@ export function makeCsrcSink(
    *  sidecar can never disagree about when an edge happened — which is the whole basis on which a
    *  replay reproduces a live run. Optional: the gmeet lane has no server-side mix to consult. */
   consume?: (ev: { csrc: number; active: boolean; tMs: number; audioLevel?: number }) => void,
+  lane: 'gmeet' | 'mixed' = 'mixed',
 ): {
-  sink: (csrc: number, active: boolean, tMs?: number, audioLevel?: number, rtpTimestamp?: number) => void;
+  sink: (csrc: number, active: boolean, tMs?: number, audioLevel?: number, rtpTimestamp?: number, track?: string, ssrc?: number) => void;
   crossed: () => number;
   stored: () => number;
 } {
@@ -265,7 +270,7 @@ export function makeCsrcSink(
   return {
     crossed: () => crossed,
     stored: () => stored,
-    sink: (csrc: number, active: boolean, tMs?: number, audioLevel?: number, rtpTimestamp?: number): void => {
+    sink: (csrc: number, active: boolean, tMs?: number, audioLevel?: number, rtpTimestamp?: number, track?: string, ssrc?: number): void => {
       crossed++;
       let t = tMs ?? Date.now();
       const skew = Math.abs(t - Date.now());
@@ -274,9 +279,11 @@ export function makeCsrcSink(
         t = Date.now();
       }
       const record: CsrcRecord = {
-        type: 'csrc', t, csrc, active, lane: 'mixed',
+        type: 'csrc', t, csrc, active, lane,
         ...(typeof audioLevel === 'number' ? { audioLevel } : {}),
         ...(typeof rtpTimestamp === 'number' ? { rtpTimestamp } : {}),
+        ...(typeof track === 'string' ? { track } : {}),
+        ...(typeof ssrc === 'number' ? { ssrc } : {}),
       };
       if (typeof telemetry?.captureCsrc === 'function') {
         try { telemetry.captureCsrc(record); stored++; }
@@ -641,6 +648,14 @@ export async function launchBrowser(inv: Invocation): Promise<BrowserSession> {
     await context.addInitScript(
       `try { window.VexaBrowserUtils && window.VexaBrowserUtils.installRemoteAudioHook && window.VexaBrowserUtils.installRemoteAudioHook({}); } catch (e) {}`,
     ).catch(() => { /* non-fatal */ });
+  } else {
+    // Google Meet: the SAME patch, registry ONLY — the lane captures Meet's own <audio>/<video>
+    // elements, so mirroring would present every remote track twice. The registry exists for the
+    // transport sensor: Meet forwards three static SSRC slots and stamps the true participant as
+    // CSRC (Meet Media API docs), which is a per-person identity the glow can only approximate.
+    await context.addInitScript(
+      `try { window.VexaBrowserUtils && window.VexaBrowserUtils.installRemoteAudioHook && window.VexaBrowserUtils.installRemoteAudioHook({ registryOnly: true }); } catch (e) {}`,
+    ).catch(() => { /* non-fatal */ });
   }
 
   // Observability (L4): route the page-side capture's log(m) → container stdout. gmeet-capture
@@ -744,6 +759,7 @@ export async function startCaptureBridge(
   const { sink: onCsrc, crossed: csrcBridgeCrossed } = makeCsrcSink(
     telemetry, undefined,
     mixed ? (ev) => pipeline.recordTransportEvent?.(ev) : undefined,
+    lane,
   );
   // Every typed observation the capture path produces, teed to the fixture instead of dying with
   // the pod. Page-side producers call __vexaObservation alongside their existing log line; the
@@ -866,14 +882,24 @@ export async function startCaptureBridge(
           w.__vexaMixDest = w.__vexaMixCtx.createMediaStreamDestination();
           w.__vexaMixSeen = new Set();
         }
+        // Bound per TRACK, not per stream (AIM-1377): the platform swaps the audio track inside an
+        // existing MediaStream (reconnects, long mute/unmute) and a source node stays on the old
+        // one — a stream-keyed mix goes silently deaf. Each live track gets its own single-track
+        // source; the rescan that re-enters here picks up swaps, `ended` tracks are forgotten.
         for (const s of streams) {
-          if (!s || w.__vexaMixSeen.has(s.id)) continue;
-          try {
-            w.__vexaMixCtx.createMediaStreamSource(s).connect(w.__vexaMixDest);
-            w.__vexaMixSeen.add(s.id);
-            w.logBot?.('[mixed] connected remote stream ' + w.__vexaMixSeen.size);
-            reportTopology();
-          } catch { /* a stream may not be connectable yet */ }
+          if (!s) continue;
+          for (const t of (s.getAudioTracks?.() ?? []) as any[]) {
+            if (!t || t.readyState === 'ended' || w.__vexaMixSeen.has(t.id)) continue;
+            try {
+              const MS = (globalThis as any).MediaStream;
+              const src = w.__vexaMixCtx.createMediaStreamSource(MS ? new MS([t]) : s);
+              src.connect(w.__vexaMixDest);
+              w.__vexaMixSeen.add(t.id);
+              t.addEventListener?.('ended', () => { try { src.disconnect(); } catch { /* gone */ } w.__vexaMixSeen.delete(t.id); });
+              w.logBot?.('[mixed] connected remote track ' + w.__vexaMixSeen.size);
+              reportTopology();
+            } catch { /* a track may not be connectable yet */ }
+          }
         }
         if (!w.__vexaMixedCapture && w.__vexaMixSeen.size && w.VexaBrowserUtils?.createMixedAudioCapture) {
           w.__vexaMixedCapture = true; // guard re-entry while the async create resolves
@@ -934,8 +960,8 @@ export async function startCaptureBridge(
             // DIAGNOSTIC ONLY: this crosses to the captured-signal tape + the counters. It is NOT
             // wired to __vexaSpeakerHint — an observation that quietly became a hint would change
             // speaker attribution while claiming to merely watch it.
-            onTransition: (t: { csrc: number; active: boolean; tMs: number; audioLevel?: number; rtpTimestamp?: number }) =>
-              w.__vexaCsrc?.(t.csrc, t.active, t.tMs, t.audioLevel, t.rtpTimestamp),
+            onTransition: (t: { csrc: number; active: boolean; tMs: number; audioLevel?: number; rtpTimestamp?: number; track?: string; ssrc?: number }) =>
+              w.__vexaCsrc?.(t.csrc, t.active, t.tMs, t.audioLevel, t.rtpTimestamp, t.track, t.ssrc),
             onObservation: (o: Record<string, unknown>) => {
               w.logBot?.('[Csrc] observation ' + JSON.stringify(o));
               w.__vexaObservation?.('csrc', o, Date.now());
@@ -1081,6 +1107,30 @@ export async function startCaptureBridge(
       });
       await w.__vexaGmeetCapture.start();
       await w.__vexaRemoteAudioReady?.();
+      // The transport sensor on the gmeet lane: DIAGNOSTIC ONLY (tape + counters, never a hint).
+      // Meet forwards three static SSRC slots and stamps the speaking participant as CSRC; whether
+      // meet.google.com sessions carry those CSRCs is what this observation exists to establish.
+      if (w.VexaBrowserUtils?.createCsrcPoll && !w.__vexaCsrcPoll) {
+        try {
+          w.__vexaCsrcPoll = w.VexaBrowserUtils.createCsrcPoll({
+            onTransition: (t: { csrc: number; active: boolean; tMs: number; audioLevel?: number; rtpTimestamp?: number; track?: string; ssrc?: number }) =>
+              w.__vexaCsrc?.(t.csrc, t.active, t.tMs, t.audioLevel, t.rtpTimestamp, t.track, t.ssrc),
+            onObservation: (o: Record<string, unknown>) => {
+              w.logBot?.('[Csrc] observation ' + JSON.stringify(o));
+              w.__vexaObservation?.('csrc', o, Date.now());
+            },
+            log: (m: string) => w.logBot?.('[Csrc] ' + m),
+          });
+          // Liveness of the sensor itself, since a silent negative ("no CSRCs on Meet") and a
+          // sensor that never armed would otherwise look identical in the tape.
+          w.__vexaCsrcHealthTimer = (globalThis as any).setInterval(() => {
+            try { const h = w.__vexaCsrcPoll?.health?.(); if (h) w.logBot?.('[Csrc] health ' + JSON.stringify(h)); } catch { /* */ }
+          }, 30_000);
+        } catch (e: any) {
+          w.__vexaCsrcPoll = null;
+          w.logBot?.('[Csrc] init failed — continuing without transport observation: ' + String(e));
+        }
+      }
     }
   }, { isMixed: mixed, isJitsi: jitsi, isTeams: inv.platform === 'teams', isZoom: inv.platform === 'zoom', botName: inv.botName,
       // How long the Teams lane waits for the server mix before capturing every track instead.
@@ -1115,6 +1165,7 @@ export async function startCaptureBridge(
       // closes in the tape instead of dangling open — the caption reader's flush, for the same
       // reason: the tail survives here or nowhere.
       try { w.__vexaCsrcPoll?.destroy?.(); w.__vexaCsrcPoll = null; } catch { /* best-effort */ }
+      try { if (w.__vexaCsrcHealthTimer) { (globalThis as any).clearInterval(w.__vexaCsrcHealthTimer); w.__vexaCsrcHealthTimer = null; } } catch { /* */ }
       try { w.__vexaJitsiSpeakers?.destroy?.(); w.__vexaJitsiSpeakers = null; } catch { /* best-effort */ }
       try { w.__vexaJitsiChat?.destroy?.(); w.__vexaJitsiChat = null; } catch { /* best-effort */ }
       try { w.__vexaZoomSpeakers?.destroy?.(); w.__vexaZoomSpeakers = null; } catch { /* best-effort */ }

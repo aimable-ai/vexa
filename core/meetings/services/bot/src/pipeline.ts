@@ -33,12 +33,12 @@ import {
   type ChunkedTranscriberCallbacks,
   type HintKind,
   type TeamsCsrcGmeetPipelineOptions,
-  type TeamsCsrcTranscriptSegment,
   type TransportEvent,
   type TurnSourceObservation,
 } from '@vexa/mixed-pipeline';
 import { TranscriptionClient, type TranscriptionResult } from '@vexa/transcribe-whisper';
 import { VoxtralTranscriber, Reson8Transcriber, LiveSpeakerStreams, type VoxtralTranscriberConfig } from '@vexa/stt-live';
+import { teamsLiveTranscriberFactory, type TeamsLiveSegment } from './teams-live.js';
 import { isMixedLanePlatform, type Invocation, type Platform } from './config.js';
 import type { TranscriptSegment } from './contracts.js';
 import type { Pipeline, TranscriptSink } from './ports.js';
@@ -231,7 +231,6 @@ function createGmeetLiveBotPipeline(
   sink: TranscriptSink,
   onError?: (e: unknown) => void,
 ): BotPipeline {
-  const url = stripLiveFragment(inv.transcriptionServiceUrl ?? '');
   const publish = (channel: number, speaker: string, segs: import('@vexa/stt-live').VoxtralSegment[], completed: boolean): void => {
     for (const c of segs) {
       const seg: ChunkSegment = { text: c.text, startMs: c.startMs, endMs: c.endMs, language: c.language, segmentId: `ch${channel}:${c.segmentId}` };
@@ -242,13 +241,7 @@ function createGmeetLiveBotPipeline(
     }
   };
   const streams = new LiveSpeakerStreams(
-    {
-      engine,
-      url,
-      apiToken: inv.transcriptionServiceToken ?? undefined,
-      model: inv.transcriptionModel ?? undefined,
-      voxtral: { languageRepair: languageRepairFromEnv() },
-    },
+    liveStreamsConfig(engine, inv),
     {
       language: inv.language ?? undefined,
       onError,
@@ -270,8 +263,9 @@ function createGmeetLiveBotPipeline(
 /** A CSRC-owned Teams row -> transcript.v1. `speaker_key` is the stable transport identity,
  * deliberately independent of the changing Whisper window/segment id, so a late proven name
  * repaints ordinary upserts without splitting one human into multiple transcript speakers. */
-function teamsToBotSegment(segment: TeamsCsrcTranscriptSegment): TranscriptSegment {
+function teamsToBotSegment(segment: TeamsLiveSegment): TranscriptSegment {
   return {
+    ...(segment.stable && !segment.completed ? { stable: true } : {}),
     segment_id: segment.segmentId,
     speaker: displaySpeaker(segment.speaker),
     speaker_key: `csrc:${segment.csrc}`,
@@ -489,6 +483,17 @@ function languageRepairFromEnv(env: NodeJS.ProcessEnv = process.env): VoxtralTra
   return url ? { url, apiToken: env.STT_LANGUAGE_REPAIR_TOKEN?.trim() || undefined } : undefined;
 }
 
+/** The per-channel live-engine config (gmeet-live and teams-live lanes share it). */
+function liveStreamsConfig(engine: Exclude<LiveEngine, null>, inv: Invocation): import('@vexa/stt-live').LiveSpeakerStreamsConfig {
+  return {
+    engine,
+    url: stripLiveFragment(inv.transcriptionServiceUrl ?? ''),
+    apiToken: inv.transcriptionServiceToken ?? undefined,
+    model: inv.transcriptionModel ?? undefined,
+    voxtral: { languageRepair: languageRepairFromEnv() },
+  };
+}
+
 function createLiveTranscriberFactory(engine: Exclude<LiveEngine, null>, inv: Invocation): MixedTranscriberFactory {
   const url = stripLiveFragment(inv.transcriptionServiceUrl ?? '');
   return (cb) => engine === 'reson8'
@@ -542,12 +547,12 @@ export function createBotPipeline(
   // Live-engine dispatch: a live transcription URL replaces the lane's whisper
   // machinery wholesale (an injected test factory/transcribe still wins).
   const live = inv.transcribeEnabled === false ? null : liveEngineForUrl(inv.transcriptionServiceUrl);
-  // Teams: upstream's CSRC-virtual-channel lane over Whisper windows. A live engine on Teams
-  // still rides the mixed lane (live-over-CSRC-channels is a follow-up).
-  if (inv.platform === 'teams' && !live) {
-    return createTeamsBotPipeline(
-      transcribe, sink, opts.onError, opts.createTeamsTranscriber, opts.onObservation, inv.botName,
-    );
+  // Teams: upstream's CSRC-virtual-channel lane — over Whisper windows by default, or with a live
+  // engine (Voxtral / reson8) driving one live session per contributing source (teams-live.ts).
+  if (inv.platform === 'teams') {
+    const factory = opts.createTeamsTranscriber
+      ?? (live ? teamsLiveTranscriberFactory(liveStreamsConfig(live, inv), inv.language ?? undefined) : undefined);
+    return createTeamsBotPipeline(transcribe, sink, opts.onError, factory, opts.onObservation, inv.botName);
   }
   if (isMixedLanePlatform(inv.platform)) {
     const factory = opts.createMixedTranscriber

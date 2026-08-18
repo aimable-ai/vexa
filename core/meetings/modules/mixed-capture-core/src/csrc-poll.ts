@@ -62,8 +62,12 @@ export interface ContributingSourceLike {
 
 /** What this needs from an RTCRtpReceiver: its track's kind, and the CSRC accessor. */
 export interface CsrcReceiverLike {
-  track?: { kind?: string } | null;
+  track?: { kind?: string; id?: string } | null;
   getContributingSources?: () => ContributingSourceLike[];
+  /** The receiver's own (synchronization) sources — on a slot-forwarding SFU (Google Meet: three
+   *  server-rewritten static SSRCs carrying the three loudest speakers) this is the SLOT identity,
+   *  carried alongside the CSRC so a tape can say which channel a participant was on. */
+  getSynchronizationSources?: () => ContributingSourceLike[];
 }
 
 /** A transition — a source became audible, or stopped being audible. The ONLY thing emitted. */
@@ -76,6 +80,11 @@ export interface CsrcTransition {
   tMs: number;
   audioLevel?: number;
   rtpTimestamp?: number;
+  /** The receiver (slot) this contribution arrived on: its track id (first 8 chars) and the slot's
+   *  own SSRC where the UA supplies one. Absent on a single-mix receiver; on a slot-forwarding SFU a
+   *  source that MOVES slot closes on the old one and opens on the new. */
+  track?: string;
+  ssrc?: number;
 }
 
 /** The one typed observation this sensor emits: it could not read the transport. Emitted ONCE per
@@ -190,7 +199,19 @@ export function createCsrcPoll(opts: CsrcPollOptions): CsrcPoll {
   const log = opts.log ?? (() => { /* silent */ });
 
   /** csrc → the last moment (epoch ms) it was observed contributing, plus its last carried levels. */
-  const live = new Map<number, { lastSeen: number; audioLevel?: number; rtpTimestamp?: number }>();
+  const live = new Map<number, { lastSeen: number; audioLevel?: number; rtpTimestamp?: number; track?: string; ssrc?: number }>();
+  const slotOf = (r: CsrcReceiverLike): { track?: string; ssrc?: number } => {
+    const track = typeof r.track?.id === 'string' ? r.track.id.slice(0, 8) : undefined;
+    let ssrc: number | undefined;
+    try {
+      const own = r.getSynchronizationSources?.() || [];
+      const n = Number(own[0]?.source);
+      if (Number.isFinite(n)) ssrc = n;
+    } catch { /* optional accessor */ }
+    return { ...(track ? { track } : {}), ...(ssrc !== undefined ? { ssrc } : {}) };
+  };
+  const slotFields = (st: { track?: string; ssrc?: number } | undefined) =>
+    ({ ...(st?.track ? { track: st.track } : {}), ...(typeof st?.ssrc === 'number' ? { ssrc: st.ssrc } : {}) });
   const reported = new Set<CsrcPollErrorObservation['where']>();
   let polls = 0;
   let receiverCount = 0;
@@ -229,6 +250,7 @@ export function createCsrcPoll(opts: CsrcPollOptions): CsrcPoll {
         let sources: ContributingSourceLike[] = [];
         try { sources = r.getContributingSources?.() || []; }
         catch (e) { fault('contributing-sources', e); continue; }   // this receiver only
+        const slot = slotOf(r);
         for (const s of sources) {
           const csrc = Number(s?.source);
           if (!Number.isFinite(csrc)) continue;
@@ -237,17 +259,29 @@ export function createCsrcPoll(opts: CsrcPollOptions): CsrcPoll {
           // whose own timestamp has gone stale is a carcass, and treating it as presence would
           // hold every speaker active for the rest of the meeting.
           if (nowMs - seenAt > inactiveMs) continue;
-          const prev = live.get(csrc);
+          let prev = live.get(csrc);
+          // A source that moved to another slot: close it on the old slot, reopen on the new.
+          if (prev && slot.track && prev.track && slot.track !== prev.track && seenAt >= prev.lastSeen) {
+            emit({
+              type: 'csrc', csrc, active: false, tMs: seenAt,
+              ...(typeof prev.audioLevel === 'number' ? { audioLevel: prev.audioLevel } : {}),
+              ...(typeof prev.rtpTimestamp === 'number' ? { rtpTimestamp: prev.rtpTimestamp } : {}),
+              ...slotFields(prev),
+            });
+            prev = undefined;
+          }
           live.set(csrc, {
             lastSeen: prev ? Math.max(prev.lastSeen, seenAt) : seenAt,
             audioLevel: typeof s?.audioLevel === 'number' ? s.audioLevel : prev?.audioLevel,
             rtpTimestamp: typeof s?.rtpTimestamp === 'number' ? s.rtpTimestamp : prev?.rtpTimestamp,
+            ...slotFields(slot),
           });
           if (!prev) {
             emit({
               type: 'csrc', csrc, active: true, tMs: seenAt,
               ...(typeof s?.audioLevel === 'number' ? { audioLevel: s.audioLevel } : {}),
               ...(typeof s?.rtpTimestamp === 'number' ? { rtpTimestamp: s.rtpTimestamp } : {}),
+              ...slotFields(slot),
             });
           }
         }
@@ -261,6 +295,7 @@ export function createCsrcPoll(opts: CsrcPollOptions): CsrcPoll {
           type: 'csrc', csrc, active: false, tMs: nowMs,
           ...(typeof state.audioLevel === 'number' ? { audioLevel: state.audioLevel } : {}),
           ...(typeof state.rtpTimestamp === 'number' ? { rtpTimestamp: state.rtpTimestamp } : {}),
+          ...slotFields(state),
         });
       }
     } catch (e) {
@@ -289,6 +324,7 @@ export function createCsrcPoll(opts: CsrcPollOptions): CsrcPoll {
           type: 'csrc', csrc, active: false, tMs,
           ...(typeof state.audioLevel === 'number' ? { audioLevel: state.audioLevel } : {}),
           ...(typeof state.rtpTimestamp === 'number' ? { rtpTimestamp: state.rtpTimestamp } : {}),
+          ...slotFields(state),
         });
       }
       live.clear();

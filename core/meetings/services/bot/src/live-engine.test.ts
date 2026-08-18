@@ -21,8 +21,9 @@ assert.equal(liveEngineForUrl(''), null);
 assert.equal(liveEngineForUrl(undefined), null);
 
 const sink: TranscriptSink = { publish: async () => { /* discard */ } };
+// zoom = the mixed lane (Teams now has its own CSRC lane; see teams-live.test.ts for Teams + live).
 const baseInv = {
-  platform: 'teams',
+  platform: 'zoom',
   nativeMeetingId: 'x',
   transcriptionServiceUrl: 'ws://localhost:1/v1/realtime',
 } as unknown as Invocation;

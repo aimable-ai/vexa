@@ -183,6 +183,37 @@ const receiver = (sources: () => ContributingSourceLike[]) => ({
   poll.destroy();
 }
 
+// ── slot identity (Google Meet: three static SSRC slots, participant = CSRC) ────────────────────
+{
+  let t = 1_800_000_000_000;
+  const out: CsrcTransition[] = [];
+  let slotOf9 = 'A';
+  const slot = (id: string, ssrc: number, sources: () => ContributingSourceLike[]) => ({
+    track: { kind: 'audio', id: `${id}-track-id-long` },
+    getContributingSources: sources,
+    getSynchronizationSources: () => [{ source: ssrc, timestamp: t }],
+  });
+  const poll = createCsrcPoll({
+    onTransition: (x) => out.push(x),
+    now: () => t,
+    timeOrigin: () => 0,
+    receivers: () => [
+      slot('A', 1001, () => (slotOf9 === 'A' ? [{ source: 9, timestamp: t }] : [])),
+      slot('B', 1002, () => (slotOf9 === 'B' ? [{ source: 9, timestamp: t }] : [])),
+    ],
+  });
+  poll.poll();
+  check('activation carries the slot: track id prefix + slot SSRC',
+    out.length === 1 && out[0].track === 'A-track-' && out[0].ssrc === 1001, JSON.stringify(out));
+  t += 100; slotOf9 = 'B'; poll.poll();
+  check('a source that moves slot closes on the old slot and reopens on the new one',
+    out.length === 3 && out[1].active === false && out[1].track === 'A-track-'
+    && out[2].active === true && out[2].track === 'B-track-' && out[2].ssrc === 1002, JSON.stringify(out));
+  poll.destroy();
+  check('teardown closes it on the slot it was last seen on',
+    out.length === 4 && out[3].active === false && out[3].track === 'B-track-', JSON.stringify(out));
+}
+
 g.setInterval = realSetInterval;
 g.clearInterval = realClearInterval;
 

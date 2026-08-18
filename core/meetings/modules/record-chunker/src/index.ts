@@ -265,28 +265,55 @@ async function findMediaElements(retries = 5, delay = 2000): Promise<HTMLMediaEl
   return [];
 }
 
-/** Mix every media element's audio into one MediaStream via a destination node. */
-async function buildCombinedStream(mediaElements: HTMLMediaElement[]): Promise<MediaStream> {
+/** Mix every media element's audio into one MediaStream via a destination node.
+ *
+ * Bound per TRACK and kept following (AIM-1377): the platform swaps the audio track inside an
+ * element's existing MediaStream mid-meeting (reconnects, long mute/unmute); a source node stays on
+ * the old track, so a build-once mix records silence for that participant from then on. Every live
+ * track gets its own single-track source; `follow()` re-checks the page (new elements, swapped
+ * tracks) and `close()` stops the follower and the context. */
+interface CombinedStream { stream: MediaStream; follow(): void; close(): void }
+function buildCombinedStream(mediaElements: HTMLMediaElement[], rescanMs = 5000): CombinedStream {
   if (mediaElements.length === 0) throw new Error("[record-chunker] no media elements to combine");
   const ctx = new AudioContext();
   const dest = ctx.createMediaStreamDestination();
-  let connected = 0;
-  mediaElements.forEach((element: any, index) => {
-    try {
-      const s =
-        element.srcObject ||
-        (element.captureStream && element.captureStream()) ||
-        (element.mozCaptureStream && element.mozCaptureStream());
-      if (s instanceof MediaStream && s.getAudioTracks().length > 0) {
-        ctx.createMediaStreamSource(s).connect(dest);
-        connected++;
-        blog(`[record-chunker] connected element ${index + 1}/${mediaElements.length}`);
-      }
-    } catch (e: any) { blog(`[record-chunker] could not connect element ${index + 1}: ${e?.message || e}`); }
-  });
-  if (connected === 0) throw new Error("[record-chunker] could not connect any audio streams");
-  blog(`[record-chunker] combined ${connected} streams`);
-  return dest.stream;
+  const seen = new Set<string>();
+  const elementStream = (element: any): MediaStream | null => {
+    const s = element.srcObject || (element.captureStream && element.captureStream()) || (element.mozCaptureStream && element.mozCaptureStream());
+    return s instanceof MediaStream ? s : null;
+  };
+  const connect = (elements: HTMLMediaElement[]): number => {
+    let added = 0;
+    elements.forEach((element: any, index) => {
+      try {
+        const s = elementStream(element);
+        if (!s) return;
+        for (const t of s.getAudioTracks()) {
+          if (t.readyState === "ended" || seen.has(t.id)) continue;
+          const src = ctx.createMediaStreamSource(new MediaStream([t]));
+          src.connect(dest);
+          seen.add(t.id);
+          added++;
+          t.addEventListener("ended", () => { try { src.disconnect(); } catch { /* gone */ } seen.delete(t.id); });
+          blog(`[record-chunker] connected element ${index + 1}/${elements.length} track ${t.id.substring(0, 8)}`);
+        }
+      } catch (e: any) { blog(`[record-chunker] could not connect element ${index + 1}: ${e?.message || e}`); }
+    });
+    return added;
+  };
+  if (connect(mediaElements) === 0) throw new Error("[record-chunker] could not connect any audio streams");
+  blog(`[record-chunker] combined ${seen.size} track(s)`);
+  const follow = (): void => {
+    const els = Array.from(document.querySelectorAll("audio, video")) as HTMLMediaElement[];
+    const added = connect(els.filter((el: any) => !el.paused && elementStream(el)?.getAudioTracks().length));
+    if (added) blog(`[record-chunker] followed ${added} new/swapped track(s), ${seen.size} live`);
+  };
+  const timer = setInterval(follow, rescanMs);
+  return {
+    stream: dest.stream,
+    follow,
+    close() { clearInterval(timer); try { ctx.close(); } catch { /* ignore */ } },
+  };
 }
 
 /** Options for createRecordingTap — combine all audio elements then optionally override. */
@@ -307,13 +334,15 @@ export interface CreateRecordingTapOptions extends RecordingTapOptions {
  */
 export function createRecordingTap(opts: CreateRecordingTapOptions): RecordingTap {
   let chunker: MediaRecorderChunker | null = null;
+  let combined: CombinedStream | null = null;
   return {
     async start(): Promise<void> {
       let stream = opts.stream;
       if (!stream) {
         const els = await findMediaElements();
         if (els.length === 0) { blog("[record-chunker] no media elements — cannot record"); return; }
-        stream = await buildCombinedStream(els);
+        combined = buildCombinedStream(els);
+        stream = combined.stream;
       }
       chunker = new MediaRecorderChunker({
         stream,
@@ -326,6 +355,8 @@ export function createRecordingTap(opts: CreateRecordingTapOptions): RecordingTa
     async stop(): Promise<void> {
       await chunker?.stop();
       chunker = null;
+      combined?.close();
+      combined = null;
     },
   };
 }

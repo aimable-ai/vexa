@@ -21,6 +21,10 @@
 
 export interface WebRtcAudioHookOptions {
   log?: (msg: string) => void;
+  /** Register peer connections for transport observers (csrc-poll) but mirror NO tracks. For a
+   *  lane that already captures the page's own <audio>/<video> elements (Google Meet): mirroring
+   *  there would present every remote track twice to the element scan. */
+  registryOnly?: boolean;
 }
 
 /** The shape a reader needs from one intercepted connection: its receivers. */
@@ -98,6 +102,7 @@ export function installRemoteAudioHook(opts: WebRtcAudioHookOptions = {}): boole
   function wrapPeerConnection(this: any, ...args: any[]) {
     const pc: RTCPeerConnection = new (OriginalPC as any)(...args);
     (win.__vexa_peer_connections as RTCPeerConnection[]).push(pc);
+    if (opts.registryOnly) return pc;
     pc.addEventListener('track', handleTrack);
 
     // Also wrap the ontrack setter so a page handler doesn't shadow ours.
@@ -124,6 +129,8 @@ export function installRemoteAudioHook(opts: WebRtcAudioHookOptions = {}): boole
   Object.setPrototypeOf(wrapPeerConnection, OriginalPC);
   win.RTCPeerConnection = wrapPeerConnection as any;
 
-  log('[Audio Hook] RTCPeerConnection patched — per-participant remote audio will be mirrored.');
+  log(opts.registryOnly
+    ? '[Audio Hook] RTCPeerConnection patched — registry only (no mirroring).'
+    : '[Audio Hook] RTCPeerConnection patched — per-participant remote audio will be mirrored.');
   return true;
 }
