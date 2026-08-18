@@ -94,6 +94,51 @@ assert.deepEqual(
 );
 await streams2.dispose();
 
+// 6: the transport spine (Meet: CSRC per participant on a static slot, an ambient marker beside it).
+//    Reproduces the 2026-08-18 two-device tape: csrc 42 on BOTH slots, 3520291550 on ch0, 659646442
+//    on ch1; the glow named both channels the same, the transport tells them apart.
+{
+  const rows: Array<{ ch: number; speaker: string; text: string; key?: string }> = [];
+  const st = new LiveSpeakerStreams(
+    { engine: 'voxtral', url: 'ws://mock' },
+    {
+      publish: () => {}, publishPending: () => {}, clearPending: () => {},
+      rename: (ch, _o, speaker, segs: VoxtralSegment[]) => { for (const s of segs) rows.push({ ch, speaker, text: s.text, key: s.speakerKey }); },
+    },
+  );
+  (st as any).ensure = async (ch: number) => {
+    const e = { feedAudio() {}, recordHint() {}, async dispose() {} };
+    (st as any).channels.set(ch, e); return e;
+  };
+  const seg = (id: string, text: string, startMs: number, endMs: number): VoxtralSegment => ({ text, startMs, endMs, language: 'nl', segmentId: id });
+  let T = 4_000_000_000_000;
+  // Laptop on ch0: participant CSRC + the ambient 42, glow "Ludger Visser".
+  st.recordTransport({ csrc: 42, active: true, tMs: T, channel: 0 });
+  st.recordTransport({ csrc: 3520291550, active: true, tMs: T, channel: 0 });
+  for (let i = 0; i < 12; i++) st.feedAudio(0, 'Ludger Visser', pcm(256), T + i * 256);
+  await flush();
+  const g0 = (st as any).attribute(0, 'Ludger Visser', [seg('a', 'hallo vanaf laptop', T, T + 3000)], true);
+  assert.equal(g0[0].segments[0].speakerKey, 'csrc:3520291550', 'the participant CSRC owns the segment, not the small constant');
+  // Phone takes over on ch1: 42 opens there while still open on ch0 → ambient for good.
+  T += 30_000;
+  st.recordTransport({ csrc: 42, active: true, tMs: T, channel: 1 });
+  st.recordTransport({ csrc: 659646442, active: true, tMs: T, channel: 1 });
+  assert.equal((st as any).csrcs.get(42).ambient, true, 'a source audible on two slots at once is ambient');
+  for (let i = 0; i < 12; i++) st.feedAudio(1, 'Ludger Visser', pcm(256), T + i * 256);
+  const g1 = (st as any).attribute(1, 'Ludger Visser', [seg('b', 'hallo vanaf telefoon', T, T + 3000)], true);
+  assert.equal(g1[0].segments[0].speakerKey, 'csrc:659646442', 'ch1 is owned by the phone CSRC');
+  assert.equal(g1[0].speaker, 'Ludger Visser', 'name learned channel-locally from the glow');
+  // Late-name repaint: a row published under a placeholder is re-issued once its source binds.
+  T += 30_000;
+  st.recordTransport({ csrc: 777, active: true, tMs: T, channel: 2 });
+  const g2 = (st as any).attribute(2, 'Speaker', [seg('c', 'wie ben ik', T, T + 2000)], true);
+  assert.equal(g2[0].speaker, 'Speaker'); assert.equal(g2[0].segments[0].speakerKey, 'csrc:777');
+  for (let i = 0; i < 12; i++) st.feedAudio(2, 'Arjé Cahn', pcm(256), T + i * 256);
+  assert.deepEqual(rows.filter((r) => r.text === 'wie ben ik').map((r) => [r.ch, r.speaker, r.key]),
+    [[2, 'Arjé Cahn', 'csrc:777']], 'the bound name repaints the earlier row via rename');
+  await st.dispose();
+}
+
 // 4: dispose drains and closes every channel transport
 await streams.dispose();
 assert.ok(transports.every((t) => t.closed), 'all channel transports closed');

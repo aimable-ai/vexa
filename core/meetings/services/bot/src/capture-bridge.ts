@@ -149,6 +149,8 @@ export interface CsrcRecord {
    *  SSRC slots) — track id prefix + slot SSRC where the UA supplies them. */
   track?: string;
   ssrc?: number;
+  /** gmeet lane: the capture channel index bound to that slot at the time (page-side lookup). */
+  channel?: number;
   lane: 'gmeet' | 'mixed';
 }
 
@@ -258,10 +260,10 @@ export function makeCsrcSink(
   /** The mixed lane's turn spine. Receives the RE-STAMPED record, so the pipeline and the stored
    *  sidecar can never disagree about when an edge happened — which is the whole basis on which a
    *  replay reproduces a live run. Optional: the gmeet lane has no server-side mix to consult. */
-  consume?: (ev: { csrc: number; active: boolean; tMs: number; audioLevel?: number }) => void,
+  consume?: (ev: { csrc: number; active: boolean; tMs: number; audioLevel?: number; channel?: number }) => void,
   lane: 'gmeet' | 'mixed' = 'mixed',
 ): {
-  sink: (csrc: number, active: boolean, tMs?: number, audioLevel?: number, rtpTimestamp?: number, track?: string, ssrc?: number) => void;
+  sink: (csrc: number, active: boolean, tMs?: number, audioLevel?: number, rtpTimestamp?: number, track?: string, ssrc?: number, channel?: number) => void;
   crossed: () => number;
   stored: () => number;
 } {
@@ -270,7 +272,7 @@ export function makeCsrcSink(
   return {
     crossed: () => crossed,
     stored: () => stored,
-    sink: (csrc: number, active: boolean, tMs?: number, audioLevel?: number, rtpTimestamp?: number, track?: string, ssrc?: number): void => {
+    sink: (csrc: number, active: boolean, tMs?: number, audioLevel?: number, rtpTimestamp?: number, track?: string, ssrc?: number, channel?: number): void => {
       crossed++;
       let t = tMs ?? Date.now();
       const skew = Math.abs(t - Date.now());
@@ -284,6 +286,7 @@ export function makeCsrcSink(
         ...(typeof rtpTimestamp === 'number' ? { rtpTimestamp } : {}),
         ...(typeof track === 'string' ? { track } : {}),
         ...(typeof ssrc === 'number' ? { ssrc } : {}),
+        ...(typeof channel === 'number' ? { channel } : {}),
       };
       if (typeof telemetry?.captureCsrc === 'function') {
         try { telemetry.captureCsrc(record); stored++; }
@@ -291,7 +294,7 @@ export function makeCsrcSink(
       }
       // The lane consumes the edge AFTER it is stored: an edge the live run acted on but the
       // fixture does not contain is an edge no replay can ever reproduce.
-      try { consume?.({ csrc, active, tMs: t, ...(typeof audioLevel === 'number' ? { audioLevel } : {}) }); }
+      try { consume?.({ csrc, active, tMs: t, ...(typeof audioLevel === 'number' ? { audioLevel } : {}), ...(typeof channel === 'number' ? { channel } : {}) }); }
       catch { /* the spine must not break capture either */ }
     },
   };
@@ -756,9 +759,11 @@ export async function startCaptureBridge(
   // The transport sensor's edges (mixed lane, every platform): RTP contributing-source
   // activations/deactivations. They are stored AND fed to the lane, where they are the turn SPINE —
   // never a name. A1 deliberately stopped short of this hop; A2 is the hop.
+  // Both lanes consume the edges: the mixed lane as its turn spine; the gmeet lane (Meet forwards
+  // three static slots and stamps the participant as CSRC) as per-channel speaker identity.
   const { sink: onCsrc, crossed: csrcBridgeCrossed } = makeCsrcSink(
     telemetry, undefined,
-    mixed ? (ev) => pipeline.recordTransportEvent?.(ev) : undefined,
+    (ev) => pipeline.recordTransportEvent?.(ev),
     lane,
   );
   // Every typed observation the capture path produces, teed to the fixture instead of dying with
@@ -1114,7 +1119,8 @@ export async function startCaptureBridge(
         try {
           w.__vexaCsrcPoll = w.VexaBrowserUtils.createCsrcPoll({
             onTransition: (t: { csrc: number; active: boolean; tMs: number; audioLevel?: number; rtpTimestamp?: number; track?: string; ssrc?: number }) =>
-              w.__vexaCsrc?.(t.csrc, t.active, t.tMs, t.audioLevel, t.rtpTimestamp, t.track, t.ssrc),
+              w.__vexaCsrc?.(t.csrc, t.active, t.tMs, t.audioLevel, t.rtpTimestamp, t.track, t.ssrc,
+                t.track ? w.__vexaGmeetCapture?.channelOfTrack?.(t.track) : undefined),
             onObservation: (o: Record<string, unknown>) => {
               w.logBot?.('[Csrc] observation ' + JSON.stringify(o));
               w.__vexaObservation?.('csrc', o, Date.now());

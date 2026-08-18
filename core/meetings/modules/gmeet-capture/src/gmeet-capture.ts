@@ -40,6 +40,9 @@ export interface GmeetCapture {
   stop(): void;
   /** Number of currently-connected participant streams. */
   streamCount(): number;
+  /** The channel index currently bound to a track whose id starts with `prefix` (the transport
+   *  sensor names slots by the receiver track's first 8 chars). Undefined when no channel holds it. */
+  channelOfTrack(prefix: string): number | undefined;
 }
 
 export function createGmeetCapture(opts: GmeetCaptureOptions): GmeetCapture {
@@ -123,6 +126,11 @@ export function createGmeetCapture(opts: GmeetCaptureOptions): GmeetCapture {
   }
 
   return {
+    channelOfTrack(prefix: string): number | undefined {
+      if (!prefix) return undefined;
+      for (const b of bound.values()) if (b.trackId && b.trackId.startsWith(prefix)) return b.index;
+      return undefined;
+    },
     async start(): Promise<void> {
       if (running) return;
       running = true;

@@ -76,6 +76,9 @@ export interface VoxtralSegment {
   endMs: number;
   language: string;
   segmentId: string;
+  /** Stable transport identity of the speaker when the lane has one (gmeet: `csrc:N`). Set by
+   *  LiveSpeakerStreams; absent on the mixed lane and when no source covered the segment. */
+  speakerKey?: string;
 }
 
 /** The subset of ChunkedTranscriberCallbacks this engine drives. `transcribe` is

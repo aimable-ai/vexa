@@ -205,11 +205,12 @@ function displaySpeaker(internal: string): string {
   return UNATTRIBUTED_LABEL.test(internal) ? '' : internal;
 }
 
-function chunkToBotSegment(speaker: string, c: ChunkSegment, completed: boolean, stable = false): TranscriptSegment {
+function chunkToBotSegment(speaker: string, c: ChunkSegment, completed: boolean, stable = false, speakerKey?: string): TranscriptSegment {
   return {
     segment_id: c.segmentId,
     speaker: displaySpeaker(speaker),
-    speaker_key: c.segmentId,
+    // The stable transport identity when the lane has one (gmeet: `csrc:N`), else the row's own id.
+    speaker_key: speakerKey ?? c.segmentId,
     text: c.text,
     start: c.startMs / 1000,
     end: c.endMs / 1000,
@@ -235,7 +236,7 @@ function createGmeetLiveBotPipeline(
     for (const c of segs) {
       const seg: ChunkSegment = { text: c.text, startMs: c.startMs, endMs: c.endMs, language: c.language, segmentId: `ch${channel}:${c.segmentId}` };
       // Live-engine drafts are model-committed → stable: consumers act before the segment closes.
-      void sink.publish(chunkToBotSegment(speaker, seg, completed, true)).catch((e) => {
+      void sink.publish(chunkToBotSegment(speaker, seg, completed, true, c.speakerKey)).catch((e) => {
         (onError ?? ((err) => console.error(`[bot] pipeline(gmeet-live): publish rejected: ${String(err)}`)))(e);
       });
     }
@@ -257,6 +258,8 @@ function createGmeetLiveBotPipeline(
     feedAudio: (channel, glowName, pcm, tsMs) => streams.feedAudio(channel, glowName, pcm, tsMs),
     feedMixedAudio() { /* not the gmeet lane */ },
     recordHint() { /* gmeet names ride the frames (glow), not out-of-band hints */ },
+    // Meet's transport identity: CSRC per participant on a static slot → the channel's speaker key.
+    recordTransportEvent: (ev) => streams.recordTransport(ev as import('@vexa/stt-live').LiveTransportEvent),
   };
 }
 
