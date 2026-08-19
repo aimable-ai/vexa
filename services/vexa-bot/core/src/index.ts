@@ -33,6 +33,7 @@ import { SileroVAD } from './services/vad';
 import { isHallucination } from './services/hallucination-filter';
 import { SpeakerStreamHandle } from './services/audio';
 import { RawCaptureService } from './services/raw-capture';
+import { CaptureSignalRecorder, captureSignalEnabled } from './services/capture-signal';
 
 // Module-level variables to store current configuration
 let currentLanguage: string | null | undefined = null;
@@ -76,6 +77,8 @@ export async function feedZoomAudio(speakerName: string, audioData: Float32Array
   if (!speakerManager || !segmentPublisher) return;
 
   const speakerId = `zoom-${speakerName.replace(/\s+/g, '_')}`;
+  captureSignal?.hint(speakerName);
+  captureSignal?.frame(999, audioData, undefined, speakerName);
 
   if (!speakerManager.hasSpeaker(speakerId)) {
     log(`[🎙️ ZOOM SPEAKER] "${speakerName}" — first audio received`);
@@ -171,6 +174,8 @@ let pipelineTelemetryInterval: ReturnType<typeof setInterval> | null = null;
 let activeSpeakerStreamHandles: SpeakerStreamHandle[] = [];
 /** Raw capture service — dumps per-speaker WAVs + events for offline replay (RAW_CAPTURE=true) */
 let rawCaptureService: RawCaptureService | null = null;
+/** captured-signal.v1 tape for exact offline replay (VEXA_CAPTURE_SIGNAL=1) */
+let captureSignal: CaptureSignalRecorder | null = null;
 export function getRawCaptureService(): RawCaptureService | null { return rawCaptureService; }
 /** Per-speaker confirmed segment batches — drained on each draft tick, flushed on cleanup */
 let confirmedBatches = new Map<string, import('./services/segment-publisher').TranscriptionSegment[]>();
@@ -1299,6 +1304,13 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
       rawCaptureService = new RawCaptureService(meetingId);
       log(`[PerSpeaker] Raw capture enabled → ${rawCaptureService.outputPath}`);
     }
+    if (captureSignalEnabled()) {
+      captureSignal = new CaptureSignalRecorder(
+        botConfig.platform === 'google_meet' ? 'gmeet' : 'mixed',
+        { sessionUid: segmentPublisher.sessionUid, platform: botConfig.platform, nativeMeetingId: botConfig.nativeMeetingId, language: botConfig.language },
+        log,
+      );
+    }
 
     const isGoogleMeet = botConfig.platform === 'google_meet';
     speakerManager = new SpeakerStreamManager({
@@ -1558,6 +1570,7 @@ async function handlePerSpeakerAudioData(speakerIndex: number, audioDataArray: n
 
   const speakerId = `speaker-${speakerIndex}`;
   const audioData = new Float32Array(audioDataArray);
+  captureSignal?.frame(speakerIndex, audioData, speakerManager.getSpeakerName(speakerId) || undefined);
 
   const platformKey = currentPlatform === 'google_meet' ? 'googlemeet'
     : currentPlatform === 'teams' ? 'msteams'
@@ -1767,6 +1780,10 @@ async function cleanupPerSpeakerPipeline(): Promise<void> {
     log(`[PerSpeaker] Raw capture finalized → ${outputPath}`);
     rawCaptureService = null;
   }
+  if (captureSignal) {
+    await captureSignal.close();
+    captureSignal = null;
+  }
 
   // Flush remaining speaker buffers
   if (speakerManager) {
@@ -1809,6 +1826,8 @@ async function handleTeamsAudioData(speakerName: string, audioDataArray: number[
 
   const speakerId = `teams-${speakerName.replace(/\s+/g, '_')}`;
   const audioData = new Float32Array(audioDataArray);
+  captureSignal?.hint(speakerName);
+  captureSignal?.frame(999, audioData, undefined, speakerName);
 
   // Add speaker if new — name is already known from DOM/caption
   if (!speakerManager.hasSpeaker(speakerId)) {

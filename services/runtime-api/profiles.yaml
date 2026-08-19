@@ -45,6 +45,12 @@ profiles:
       TRANSCRIPTION_SERVICE_TOKEN: "${TRANSCRIPTION_SERVICE_TOKEN}"
       TTS_SERVICE_URL: "${TTS_SERVICE_URL}"
       INTERNAL_API_SECRET: "${INTERNAL_API_SECRET}"
+      # captured-signal.v1 tape per bot for exact offline replay (AIM-1627). Off unless =1.
+      VEXA_CAPTURE_SIGNAL: "${VEXA_CAPTURE_SIGNAL:-0}"
+      VEXA_CAPTURE_SIGNAL_DIR: "/captured-signal"
+      VEXA_CAPTURE_SIGNAL_MAX_BYTES: "${VEXA_CAPTURE_SIGNAL_MAX_BYTES:-}"
+    mounts:
+      - "${VEXA_CAPTURE_SIGNAL_HOST_DIR:-/tmp/vexa-captured-signal}:/captured-signal"
     ports:
       "9222/tcp": {}         # CDP debug port
 
