@@ -132,6 +132,8 @@ export interface VoxtralTranscriberConfig {
   tailSilenceMs?: number;
   /** Fill the tail with ±`tailNoiseLsb` LSB of white noise instead of exact digital zero. */
   tailNoiseLsb?: number;
+  /** Max starvation recycles (default 3; 0 = warn only, for A/B experiments). */
+  starvationMaxRecycles?: number;
 }
 
 interface TurnRecord {
@@ -516,7 +518,7 @@ export class VoxtralTranscriber {
       this.starvedWarned = true;
       const sec = this.starvedAudioSec.toFixed(1);
       this.cb.onError?.(new Error(`voxtral starved: ${sec}s audio unanswered`));
-      if (this.starvedRecycles < STARVATION_MAX_RECYCLES) {
+      if (this.starvedRecycles < (this.cfg.starvationMaxRecycles ?? STARVATION_MAX_RECYCLES)) {
         this.starvedRecycles++;
         const replay = this.starvedPcm;
         this.clearUnanswered();

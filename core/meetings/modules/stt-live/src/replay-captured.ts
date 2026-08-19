@@ -51,6 +51,7 @@ async function main(): Promise<void> {
     ...(process.env.TAIL_SILENCE_MS !== undefined ? { tailSilenceMs: Number(process.env.TAIL_SILENCE_MS) } : {}),
     ...(process.env.TAIL_FLUSH_MS !== undefined ? { tailFlushAfterMs: Number(process.env.TAIL_FLUSH_MS) } : {}),
     ...(process.env.TAIL_NOISE_LSB !== undefined ? { tailNoiseLsb: Number(process.env.TAIL_NOISE_LSB) } : {}),
+    ...(process.env.MAX_RECYCLES !== undefined ? { starvationMaxRecycles: Number(process.env.MAX_RECYCLES) } : {}),
   };
   const { header, frames } = await load(inPath, START, END);
   console.error(`[replay] ${frames.length} frames, ${header.native_meeting_id}, mode=${MODE} primer=${primer} slice=${START}-${END}`);

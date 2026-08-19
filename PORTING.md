@@ -190,12 +190,13 @@ Acceptance: three meetings on one stack, one per engine, each transcribes; STT
 preflight (503 + 60 s spawn-refusal on bad URL/token) behaves for all three.
 
 ### P5. Triage list — check before re-implementing
-- **Meet track-swap deafness: CONFIRMED still broken in 0.12** (stream.id-keyed
-  dedupe, no addtrack/replaceTrack handling, source node pinned to first track) in
-  THREE places: `gmeet-capture.ts:60-125`, the mixed re-mix
-  (`capture-bridge.ts:337-366`), `record-chunker` `buildCombinedStream` (no rescan).
-  Port our per-track rebind + rescan (13e1a028, 1cd02d4d). Also fix the AudioContext
-  leak on ended streams while there. **Upstream-PR candidate.**
+- **Meet track-swap deafness: PORTED 2026-08-17 (fork-local, no upstream PR)** in all
+  three places: `gmeet-capture.ts` binds per ELEMENT with the source following the current
+  TRACK (own single-track MediaStream; `addtrack`/`ended`/5 s rescan rebind; channel index
+  stable; one AudioContext per element, closed on stop) + `gmeet-capture.trackswap.test.ts`;
+  mixed re-mix in `capture-bridge.ts` keyed on track ids, `ended` disconnects; record-chunker
+  `buildCombinedStream` per-track + `follow()` rescan, closed with the tap. Old fork refs
+  13e1a028, 1cd02d4d.
 - Chrome tab crash → graceful leave; bot mem 4Gi (c9991f0a); runtime profile limits
   (de40c581) — re-express against runtime kernel profiles.
 - api-gateway 10-min transcribe timeout (f0f4cb6f): **obsolete** — the re-transcribe
@@ -457,3 +458,50 @@ Upstream knobs relevant to Teams tuning: `VEXA_HINT_MIN_COVERAGE` 0.35,
   0.10, webhook claim placement, agreed 403/429 classifier, STT-unavailable copy,
   webhook-event retention. Open: which space/STT a calendar-planned bot should use
   (currently tenant default_space); PII/language/initial_prompt not in calendar spawn.
+- 2026-08-17 (merge): upstream v0.12.23-rc.17 merged (12249bdd). Teams now has its own CSRC lane
+  (`csrc-poll.ts` → `source-name-correlator` → `teams-csrc-channelizer` → per-channel Meet
+  buffer) — browser-side `RTCRtpReceiver.getContributingSources()`, NO Graph. Our 08-11 "Teams
+  attribution needs a Graph bot" was wrong for attribution (still true for overlap separation /
+  unmixed audio). Dispatch: live engine first; Teams without live → CSRC lane; Teams + live
+  (Voxtral) → mixed lane via our live factory (DOM-hint attribution). **Open (fork-side, upstream
+  won't do it — they have no live engine):** live-over-CSRC. `data.spawn` pins override
+  upstream's new calendar/env defaults in `auto_join.py`.
+- 2026-08-17 (later): **live-over-CSRC DONE** — `bot/src/teams-live.ts` `TeamsCsrcLiveTranscriber`
+  = `TeamsCsrcChannelizer` (one virtual channel per contributing source) + `TrackNamer` (earned
+  names, letter fallback) + `LiveSpeakerStreams` (channel index = CSRC → one Voxtral/reson8
+  session per source, lazy). Rows: `speaker_key csrc:N`, ids `csrcN:…`, drafts `stable:true`,
+  repaint in place on `onNamed`. Dispatch (`pipeline.ts`): Teams ALWAYS rides the CSRC lane —
+  live URL → `teamsLiveTranscriberFactory`, else upstream whisper windows; injected
+  `createTeamsTranscriber` still wins. `liveStreamsConfig()` shared with gmeet-live.
+  Tests: `teams-live.test.ts` (dispatch, session-per-CSRC, stable rows, namer repaint, dispose,
+  bot-boundary mapping); `live-engine.test.ts` mixed-lane cases now use zoom. Bot suite + graph/
+  isolation/exports/dataflow/readme gates green. Not yet: overlap (two sources audible at once
+  fan out to both channels by design — each engine hears the mix for that span).
+- 2026-08-17 (later): P5 Meet track-swap deafness ported (see P5). Bot suite + gate:node
+  (19 packages) + graph/isolation/exports/readme green.
+- 2026-08-19: **Voxtral "starved" = audio.cpp decoder stuck on STREAMING_PAD.** Meeting 14 (svs-kqbq-nwk)
+  lost 29 s of ch0 speech (`pipeline fault: voxtral starved: 8.2s audio unanswered`); exact replay of the
+  captured tape reproduced it 4/5 runs at the same passage; a token log in audio.cpp (`VOXTRAL_DEBUG_TOKENS=1`,
+  fork-local patch in `session.cpp` on pii) shows 232× id 32 `[STREAMING_PAD]` for 18 s of loud speech, no
+  `33`/text; a fresh session transcribes the same bytes fine → state-dependent, not content/audio. Fix (stt-live):
+  starvation now recycles the session and re-sends the unanswered PCM (≤30 s, ≤3 tries without a delta;
+  wall-gated so the re-sent backlog gets time to be answered). Validated on the tape: text resumes <1 s after
+  the recycle. Also: engine `log` was never wired into the bot log for gmeet-live/teams-live (no `[voxtral]`
+  lines in workload logs) — now `[bot] pipeline(gmeet-live)[chN][voxtral] …`. The other reopens seen
+  (07:58:17, 08:01:31) were audio.cpp's `live_ingest.idle_timeout_ms` default **30 s** (http.h) killing a
+  channel that sent no bytes for 30 s (only gated speech is sent) — the bot's 300 s idle is moot while the
+  server's is 30 s; raise `idle_timeout_ms` in pii `server.json` (and slots with it).
+- 2026-08-19 (later): **the pad-lock TRIGGER is our own synthetic tail silence.** Replaying the
+  meeting-14 tape through the real engine at 1× pace: `TAIL_SILENCE` 1200 ms on → hole in 3/3 runs
+  (same passage); 0 → 0/2; 400 ms → still 1 episode; noise-filled block → still locks; 2× speed
+  (fewer flushes fire) → none. The 700 ms flush threshold fires on ordinary intra-sentence pauses,
+  so 1.2 s of fabricated silence landed mid-utterance ~10×/min/speaker and a few % of those locked
+  the decoder. Fix (ff2da835): gmeet-capture `createHangoverGate` keeps 1.5 s of the speaker's REAL
+  trailing audio flowing after the last loud chunk (delay conditioning satisfied by room tone);
+  transcriber `TAIL_SILENCE_MS = 0` (`tailSilenceMs` stays as an experiment knob; replay-captured
+  takes `TAIL_SILENCE_MS` / `TAIL_FLUSH_MS` / `TAIL_NOISE_LSB` / `MAX_RECYCLES`). Independent GT
+  (external transcript of the bot010 recording): live 0.10 0.202, live 0.12 0.238 → 0.195 with the
+  hole excised (engine parity); on the 345 s slice: pre-fix 0.352, recycle-only 0.271, no-silence
+  0.237. Recycle (5a96294d) stays as the safety net — with no silence in the re-sent buffer it can
+  no longer re-poison the fresh session. Hangover itself is not yet measured live (the tape holds
+  only gated frames); first meeting on the rebuilt bot gives the first hangover capture.
