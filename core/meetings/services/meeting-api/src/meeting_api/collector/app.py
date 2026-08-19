@@ -275,9 +275,10 @@ def build_router(
         return JSONResponse(content={"meetings": meetings, "has_more": has_more})
 
     # --- GET /bots/status → the caller's currently-running bots (api/meetings.mdx "Running bots").
-    # Running == any non-terminal FSM status (requested·joining·awaiting_admission·active·stopping);
-    # terminal (completed·failed) rows are excluded. Owner-scoped via X-User-Id. ---
-    _RUNNING_STATUSES = ("requested", "joining", "awaiting_admission", "active", "stopping")
+    # Running == any non-terminal FSM status (requested·joining·awaiting_admission·active·needs_help·
+    # stopping); terminal (completed·failed) rows are excluded. `needs_help` is a live bot waiting
+    # on a human — hiding it makes a client's staleness check auto-fail the meeting. Owner-scoped via X-User-Id. ---
+    _RUNNING_STATUSES = ("requested", "joining", "awaiting_admission", "active", "needs_help", "stopping")
 
     @router.get("/bots/status")
     async def bots_status(
