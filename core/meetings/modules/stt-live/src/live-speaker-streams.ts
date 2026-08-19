@@ -68,16 +68,23 @@ interface CsrcState {
   support: Map<string, number>;
   /** Bound name once the evidence clears the bars. */
   name?: string;
-  /** An ambient marker, not a person: audible on two channels at once, OR co-audible on one
-   *  channel with two DIFFERENT other sources (Meet stamps a constant beside every participant). */
+  /** Accounting for the marker test: ms audible on some slot, and ms audible ALONE on its slot.
+   *  Meet stamps a constant (42 so far) on whichever slot carries the dominant speaker — it is on
+   *  exactly one slot at a time, for the whole meeting, and NEVER alone; a person is alone on a
+   *  slot a good share of their time. (Two-slots-at-once and co-occurrence rules both failed on a
+   *  4-person call: Meet reshuffles people across its three slots ~10×/s.) */
+  activeMs: number;
+  soloMs: number;
+  /** The current marker verdict (re-evaluated as time is charged; may flip back). */
   ambient: boolean;
-  /** Other sources this one has been co-audible with on the same channel. */
-  companions: Set<number>;
   /** Confirmed rows already published under this source, for the late-name repaint. */
   published: Array<{ channel: number; speaker: string; seg: import('./voxtral-transcriber.js').VoxtralSegment }>;
 }
 
 const CSRC_HISTORY_MS = 10 * 60_000;
+/** The marker test needs this much audible time before a verdict, and a solo share below this. */
+const AMBIENT_MIN_ACTIVE_MS = 20_000;
+const AMBIENT_MAX_SOLO_SHARE = 0.03;
 const CSRC_MIN_SUPPORT_MS = 1500;
 const CSRC_MIN_SHARE = 0.6;
 const CSRC_MIN_MARGIN = 0.1;
@@ -91,6 +98,8 @@ export class LiveSpeakerStreams {
   private creating = new Map<number, Promise<ChannelEngine>>();
   private glow = new Map<number, GlowState>();
   private csrcs = new Map<number, CsrcState>();
+  /** Per channel: the sources currently open there, and when that set last changed. */
+  private openOn = new Map<number, { set: Set<number>; sinceMs: number }>();
   private disposed = false;
 
   constructor(private cfg: LiveSpeakerStreamsConfig, private cb: LiveSpeakerStreamsCallbacks) {}
@@ -145,33 +154,39 @@ export class LiveSpeakerStreams {
     const list = st.onChannel.get(ev.channel) ?? [];
     st.onChannel.set(ev.channel, list);
     const open = list.length ? list[list.length - 1] : undefined;
-    if (ev.active) {
-      if (open && open.end === null) return;                     // already open on this channel
-      if (!st.ambient) {
-        for (const [ch, ivs] of st.onChannel) {
-          if (ch !== ev.channel && ivs.length && ivs[ivs.length - 1].end === null) { st.ambient = true; break; }
-        }
-      }
-      // Co-audible sources on this channel: each becomes the other's companion; a source with two
-      // different companions is the marker, not a person (a person's only companion is the marker).
-      for (const [other, ost] of this.csrcs) {
-        if (other === ev.csrc) continue;
-        const oivs = ost.onChannel.get(ev.channel);
-        if (!oivs?.length || oivs[oivs.length - 1].end !== null) continue;
-        st.companions.add(other); ost.companions.add(ev.csrc);
-        if (st.companions.size >= 2) st.ambient = true;
-        if (ost.companions.size >= 2) ost.ambient = true;
-      }
-      list.push({ start: ev.tMs, end: null });
-    } else if (open && open.end === null) {
-      open.end = ev.tMs;
-    }
+    if (ev.active && open && open.end === null) return;         // already open on this channel
+    if (!ev.active && !(open && open.end === null)) return;     // already closed
+    this.account(ev.channel, ev.tMs);
+    const slot = this.openOn.get(ev.channel)!;
+    if (ev.active) { list.push({ start: ev.tMs, end: null }); slot.set.add(ev.csrc); }
+    else { open!.end = ev.tMs; slot.set.delete(ev.csrc); }
     this.prune(st, ev.tMs);
+  }
+
+  /** Charge the elapsed time on a channel to every source open there (solo when it was alone),
+   *  then re-test the marker verdicts. */
+  private account(channel: number, nowMs: number): void {
+    let slot = this.openOn.get(channel);
+    if (!slot) { slot = { set: new Set(), sinceMs: nowMs }; this.openOn.set(channel, slot); return; }
+    const dt = Math.max(0, nowMs - slot.sinceMs);
+    slot.sinceMs = nowMs;
+    if (!dt) return;
+    for (const c of slot.set) {
+      const st = this.csrcs.get(c);
+      if (!st) continue;
+      st.activeMs += dt;
+      if (slot.set.size === 1) st.soloMs += dt;
+      const verdict = st.activeMs >= AMBIENT_MIN_ACTIVE_MS && st.soloMs / st.activeMs < AMBIENT_MAX_SOLO_SHARE;
+      if (verdict !== st.ambient) {
+        st.ambient = verdict;
+        this.cb.log?.(`[csrc] ${c} ${verdict ? 'is' : 'is no longer'} the slot marker (solo ${Math.round(st.soloMs / 1000)} s of ${Math.round(st.activeMs / 1000)} s)`);
+      }
+    }
   }
 
   private csrcState(csrc: number): CsrcState {
     let st = this.csrcs.get(csrc);
-    if (!st) { st = { onChannel: new Map(), support: new Map(), ambient: false, companions: new Set(), published: [] }; this.csrcs.set(csrc, st); }
+    if (!st) { st = { onChannel: new Map(), support: new Map(), ambient: false, activeMs: 0, soloMs: 0, published: [] }; this.csrcs.set(csrc, st); }
     return st;
   }
 
