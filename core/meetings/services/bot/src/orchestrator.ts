@@ -167,6 +167,8 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
   // The end signal: a `leave` act, host removal, or a timeout all resolve the active phase.
   let signalEnd: ((r: CompletionReason) => void) | null = null;
   const ended = new Promise<CompletionReason>((res) => { signalEnd = res; });
+  // Set by crash(): the active phase ends as `failed` with this reason text instead of `completed`.
+  let crashText: string | null = null;
 
   // The PRE-ACTIVE abort signal (Bug 2 — the waiting-room-orphan fix): a stop/SIGTERM that arrives
   // while the bot is still `joining`/`awaiting_admission` (blocked inside `deps.join.join()`, waiting
@@ -311,6 +313,8 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
     const reason = await ended;
 
     // ── graceful teardown (best-effort; never masks the completion reason) ──
+    // On a browser crash the page is gone: leave() can only fail (bounded by the 8s race below),
+    // and the terminal is `failed`, not `completed` — see crash().
     if (cap) clearTimeout(cap);
     unsubscribe();
     stopAloneness();
@@ -325,6 +329,10 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
       new Promise<void>((resolve) => setTimeout(resolve, 8000)),
     ]);
 
+    if (crashText) {
+      await emit('failed', { failure_stage: 'active', completion_reason: 'join_failure', reason: crashText, exit_code: 1 });
+      return { exitCode: 1, status: 'failed', completionReason: 'join_failure' };
+    }
     console.error(`[bot] orchestrator: emitting completed (reason=${reason}, from=${cur})`);
     try {
       await emit('completed', { completion_reason: reason, exit_code: 0 });
@@ -341,6 +349,19 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
    *  completed). If it is still PRE-ACTIVE (`joining`/`awaiting_admission`, blocked in the lobby),
    *  it instead aborts the join so `run()` WITHDRAWS the waiting-room request rather than being
    *  SIGKILLed into a lobby orphan (Bug 2). After the run ended both are no-ops (resolvers fired). */
+  /** The browser tab died under an ACTIVE bot (Chromium "Aw, Snap" / renderer OOM). Nothing
+   *  downstream can observe the page any more — the removal monitor goes blind and the bot would
+   *  sit "active" until the time cap (the 2026-07 meeting-113 shape: Chrome dead, Node alive,
+   *  container live, meeting stuck). End the active phase now as a terminal `failed`
+   *  (stage active, join_failure + the crash text — the vocabulary pipeline.start faults already
+   *  use) so the control plane learns the truth and a planned occurrence may be re-dispatched.
+   *  Pre-active, the in-flight join throws on its own and is classified join_failure there. */
+  function crash(text: string): void {
+    if (cur !== 'active') return;
+    crashText = crashText ?? text;
+    signalEnd?.('join_failure');
+  }
+
   function stop(reason: CompletionReason = 'stopped'): void {
     if (cur === 'active') {
       signalEnd?.(reason);
@@ -351,5 +372,5 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
     }
   }
 
-  return { run, handle, stop };
+  return { run, handle, stop, crash };
 }

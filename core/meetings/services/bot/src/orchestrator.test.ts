@@ -220,6 +220,36 @@ async function main(): Promise<void> {
     check('removal: sequence reached active', seq(lc.events).includes('active'));
   }
 
+  // ── browser tab crash while active → failed(active/join_failure) with the crash text ──
+  // Before: a crashed page left the bot "active" until the time cap (removal monitor blind).
+  {
+    const lc = recordingSink();
+    let leaveCalled = false;
+    const join: JoinDriver = {
+      async join(report) { await report('awaiting_admission'); await report('active'); return { outcome: 'admitted' }; },
+      onRemoval() { return () => { /* */ }; },
+      async leave() { leaveCalled = true; throw new Error('Target page, context or browser has been closed'); },
+      async withdraw() { /* */ },
+    };
+    const o = createOrchestrator(inv(), { lifecycle: lc, join, pipeline: noopPipeline(), acts: noopActs(), aloneness: noopAloneness() });
+    const runP = o.run();
+    setTimeout(() => o.crash('chrome tab crashed'), 5);
+    const res = await runP;
+    const t = last(lc.events);
+    check('crash: failed / exit 1', res.status === 'failed' && res.exitCode === 1);
+    check('crash: failure_stage=active', t.failure_stage === 'active');
+    check('crash: completion_reason=join_failure', t.completion_reason === 'join_failure');
+    check('crash: reason text carried', String(t.reason ?? '').includes('chrome tab crashed'));
+    check('crash: leave attempted (best-effort, its throw did not mask the terminal)', leaveCalled);
+    check('crash: events conform', allConform(lc.events));
+    // Pre-active: crash() is a no-op (the in-flight join throws on its own).
+    const lc2 = recordingSink();
+    const o2 = createOrchestrator(inv(), { lifecycle: lc2, join: mockJoin('rejected'), pipeline: noopPipeline(), acts: noopActs(), aloneness: noopAloneness() });
+    o2.crash('chrome tab crashed');
+    const res2 = await o2.run();
+    check('crash pre-active: no effect on the join verdict', last(lc2.events).completion_reason === 'awaiting_admission_rejected' && res2.status === 'failed');
+  }
+
   // ── hard time cap → completed(max_bot_time_exceeded) ──
   {
     const lc = recordingSink();

@@ -318,6 +318,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   // a wedged teardown can never ride a `docker stop` all the way to a silent 137 (the incident's
   // exit code on BOTH orphaned bots). Wire before run(); release the listeners after.
   const releaseSignals = installSignalHandlers({ stop: (reason) => orchestrator.stop(reason) });
+  // Chromium tab crash (renderer OOM / "Aw, Snap") under an active bot: the page is gone, so end
+  // the meeting as failed(active) now instead of sitting "active" until the time cap (meeting-113).
+  session?.page.on('crash', () => {
+    console.error('[bot] chrome tab crashed — ending the active phase');
+    orchestrator.crash('chrome tab crashed');
+  });
   try {
     const result = await orchestrator.run({ maxActiveMs: deriveMaxActiveMs(inv, aloneSilenceWindowMs, env) });
     return result.exitCode;
