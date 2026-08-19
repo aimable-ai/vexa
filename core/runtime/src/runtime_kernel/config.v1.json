@@ -83,6 +83,15 @@
       "targets": []
     },
     {
+      "key": "DOCKER_MEMORY_LIMIT",
+      "class": "defaulted",
+      "default": "(unset — no cap)",
+      "description": "hard memory cap (e.g. 4g) for every container the docker backend spawns — a leaking bot OOMs in its own cgroup instead of taking the host down; compose sets 4g",
+      "targets": [
+        "compose"
+      ]
+    },
+    {
       "key": "RUNTIME_STOP_GRACE_SEC",
       "class": "defaulted",
       "default": "30",

@@ -28,7 +28,7 @@ services:
 
   postgres:
     image: postgres:17-alpine
-    command: ["postgres", "-c", "idle_in_transaction_session_timeout=60000"]
+    command: ["postgres", "-c", "idle_in_transaction_session_timeout=600000"]
     environment:
       - POSTGRES_DB=${DB_NAME:-vexa}
       - POSTGRES_USER=${DB_USER:-postgres}
@@ -142,6 +142,8 @@ services:
       - AGENT_WORKER_IMAGE=${AGENT_WORKER_IMAGE:-vexaai/v012-agent-worker:${IMAGE_TAG:-dev}}
       # Optional low-latency tuning for the Google Meet speaker-stream pipeline. Empty values keep
       # the bot defaults; runtime forwards configured values to spawned bot containers.
+      # Hard memory cap per spawned bot/worker container (0.10 capped bots at 4Gi; unset = none).
+      - DOCKER_MEMORY_LIMIT=${DOCKER_MEMORY_LIMIT:-4g}
       - BOT_ALONE_SILENCE_WINDOW_MS=${BOT_ALONE_SILENCE_WINDOW_MS:-}
       - BOT_SPEAKER_MIN_AUDIO_SEC=${BOT_SPEAKER_MIN_AUDIO_SEC:-}
       - BOT_SPEAKER_SUBMIT_INTERVAL_SEC=${BOT_SPEAKER_SUBMIT_INTERVAL_SEC:-}

@@ -147,8 +147,8 @@ def _socket_url() -> str:
     return f"http+unix://{path.replace('/', '%2F')}"
 
 
-def _shm_bytes() -> Optional[int]:
-    raw = os.getenv("DOCKER_SHM_SIZE", "2g").strip().lower()
+def _size_bytes(raw: str) -> Optional[int]:
+    raw = raw.strip().lower()
     if not raw:
         return None
     mult = {"k": 1024, "m": 1024**2, "g": 1024**3}.get(raw[-1])
@@ -156,6 +156,17 @@ def _shm_bytes() -> Optional[int]:
         return int(raw[:-1]) * mult if mult else int(raw)
     except ValueError:
         return None
+
+
+def _shm_bytes() -> Optional[int]:
+    return _size_bytes(os.getenv("DOCKER_SHM_SIZE", "2g"))
+
+
+def _memory_bytes() -> Optional[int]:
+    """Hard memory cap for spawned containers (``DOCKER_MEMORY_LIMIT``, e.g. ``4g``; unset = none).
+    A leaking bot/Chromium must OOM inside its own cgroup, not take the host down — 0.10 capped
+    bots at 4Gi; the kernel applied nothing."""
+    return _size_bytes(os.getenv("DOCKER_MEMORY_LIMIT", ""))
 
 
 class DockerBackend:
@@ -234,6 +245,9 @@ class DockerBackend:
         shm = _shm_bytes()
         if shm:
             host_config["ShmSize"] = shm
+        mem = _memory_bytes()
+        if mem:
+            host_config["Memory"] = mem
 
         # Workspace mount set (Workspace primitive + WP-A1.1): the dispatch's granted git folders are
         # PORTED IN, not cloned. The mount plumbing is SHARED across all three backends

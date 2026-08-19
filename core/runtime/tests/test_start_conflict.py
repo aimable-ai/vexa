@@ -65,3 +65,31 @@ def test_start_replaces_stale_named_container_on_409():
         "POST /containers/create?name=vexa-w9",       # clean re-create
         "POST /containers/cid-123/start",
     ]
+
+
+class _RecordingCreateSession:
+    def __init__(self) -> None:
+        self.create_payload = None
+
+    def request(self, method: str, url: str, **kw):
+        path = urlparse(url).path
+        if method == "POST" and path.endswith("/containers/create"):
+            self.create_payload = kw.get("json")
+            return _Resp(201, {"Id": "cid-1"})
+        if method == "POST" and path.endswith("/start"):
+            return _Resp(204)
+        return _Resp(500, {"message": f"unhandled {method} {path}"})
+
+
+def test_start_applies_docker_memory_limit_when_set(monkeypatch):
+    """DOCKER_MEMORY_LIMIT caps every spawned container (HostConfig.Memory); unset ⇒ no cap."""
+    be = DockerBackend()
+    fake = _RecordingCreateSession()
+    be._session = fake
+    monkeypatch.setenv("DOCKER_MEMORY_LIMIT", "4g")
+    be.start("w1", Runnable(image="alpine", command=["true"]), env={})
+    assert fake.create_payload["HostConfig"]["Memory"] == 4 * 1024**3
+
+    monkeypatch.delenv("DOCKER_MEMORY_LIMIT")
+    be.start("w2", Runnable(image="alpine", command=["true"]), env={})
+    assert "Memory" not in fake.create_payload["HostConfig"]
