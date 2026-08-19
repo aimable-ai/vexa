@@ -58,15 +58,24 @@ const DEFAULT_SESSION_MAX_AUDIO_SEC = 0;
 /** ...waiting for a pause; force it after this much extra audio — a mid-speech
  *  recycle costs a word or two once, context overflow costs everything. */
 const SESSION_FORCE_EXTRA_SEC = 160;
-/** Speech sent with nothing decoded back before the session is called starved. */
+/** Speech sent with nothing decoded back before the session is called starved. audio.cpp's
+ *  Voxtral decoder can fall into a STREAMING_PAD-only state mid-session (seen 2026-08-19: 18 s
+ *  of loud speech decoded as pads, a fresh session transcribes the same bytes fine), so a
+ *  starved session is recycled and the unanswered audio re-sent into the new one. */
 const STARVATION_WARN_SEC = 8;
+/** Unanswered audio kept for that re-send (bounded so a dead server can't grow it). */
+const STARVATION_REPLAY_MAX_SEC = 30;
+/** Consecutive starved recycles with no delta in between before we stop re-sending audio
+ *  (a server that is down, not stuck, must not be hammered with the same 30 s forever). */
+const STARVATION_MAX_RECYCLES = 3;
 /** Unresolved (provisionally-named) turns kept for late hint renames. */
 const MAX_UNRESOLVED = 100;
 /** dispose(): wait this long for in-flight deltas after the final flush. */
 const DRAIN_MS = 1500;
 
 const SENTENCE_END = /[.!?…]["')\]]?\s*$/;
-const TAIL_SILENCE = Buffer.alloc(Math.floor((TAIL_SILENCE_MS / 1000) * SAMPLE_RATE) * 2);
+const silenceBuffer = (ms: number): Buffer => Buffer.alloc(Math.floor((ms / 1000) * SAMPLE_RATE) * 2);
+const TAIL_SILENCE = silenceBuffer(TAIL_SILENCE_MS);
 
 /** Structurally @vexa/mixed-pipeline's ChunkSegment (kept local so this module's
  *  front door needs no type dependency on the chunked lane). */
@@ -112,6 +121,11 @@ export interface VoxtralTranscriberConfig {
   junkPhrases?: ReadonlySet<string>;
   /** Re-transcribe segments that drift out of the session language (see LanguageRepair). */
   languageRepair?: Omit<LanguageRepairConfig, 'language'>;
+  /** Speech-pause threshold for the tail flush (default 700); synthetic silence pushed on it (default 1200, 0 = none). */
+  tailFlushAfterMs?: number;
+  tailSilenceMs?: number;
+  /** Fill the tail with ±`tailNoiseLsb` LSB of white noise instead of exact digital zero. */
+  tailNoiseLsb?: number;
 }
 
 interface TurnRecord {
@@ -129,6 +143,8 @@ export class VoxtralTranscriber {
   private readonly now: () => number;
   private readonly idleTimeoutMs: number;
   private readonly sessionMaxAudioSec: number;
+  private readonly tailFlushAfterMs: number;
+  private readonly tailSilence: Buffer;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
 
@@ -146,6 +162,13 @@ export class VoxtralTranscriber {
   private sessionAudioSec = 0;
   private starvedAudioSec = 0;
   private starvedWarned = false;
+  /** Wall clock of the last delta (or session open) — a re-sent backlog must be given real
+   *  time to be answered before the session is called starved again. */
+  private answeredWallMs = 0;
+  /** PCM sent since the last delta — what a starved session gets re-fed after recycle. */
+  private starvedPcm: Buffer[] = [];
+  private starvedPcmSec = 0;
+  private starvedRecycles = 0;
   private seq = 0;
   private turnCounter = 0;
   private openClusterId = '';
@@ -157,6 +180,13 @@ export class VoxtralTranscriber {
     this.now = cfg.now ?? Date.now;
     this.idleTimeoutMs = cfg.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.sessionMaxAudioSec = cfg.sessionMaxAudioSec ?? DEFAULT_SESSION_MAX_AUDIO_SEC;
+    this.tailFlushAfterMs = cfg.tailFlushAfterMs ?? TAIL_FLUSH_AFTER_MS;
+    this.tailSilence = cfg.tailSilenceMs === undefined ? TAIL_SILENCE : silenceBuffer(cfg.tailSilenceMs);
+    if (cfg.tailNoiseLsb) {
+      const b = Buffer.from(this.tailSilence);
+      for (let i = 0; i < b.length; i += 2) b.writeInt16LE(Math.round((Math.random() * 2 - 1) * cfg.tailNoiseLsb), i);
+      this.tailSilence = b;
+    }
     this.primer = new PrimerGate(cb.language, this.now);
     this.repair = cfg.languageRepair ? new LanguageRepair({ ...cfg.languageRepair, language: cb.language }) : null;
     this.binder = new ClusterNameBinder({
@@ -190,6 +220,7 @@ export class VoxtralTranscriber {
     if (this.transport?.ready) {
       this.transport.sendAudio(pcm16);
       this.audioSinceCommit = true;
+      this.rememberUnanswered(pcm16, pcm.length / SAMPLE_RATE);
     } else {
       this.pendingAudio.push(pcm16);
       if (!this.transport) this.connect();
@@ -216,7 +247,7 @@ export class VoxtralTranscriber {
     // a bounded window to arrive, then finalize whatever is open.
     if (this.transport?.ready) {
       try {
-        this.transport.sendAudio(TAIL_SILENCE);
+        if (this.tailSilence.length) this.transport.sendAudio(this.tailSilence);
         this.transport.commit();
         await new Promise((r) => setTimeout(r, this.cfg.sweepIntervalMs === 0 ? 0 : DRAIN_MS));
       } catch (e) { this.cb.onError?.(e); }
@@ -238,6 +269,7 @@ export class VoxtralTranscriber {
           if (this.transport !== t) return;
           this.starvedAudioSec = 0;
           this.starvedWarned = false;
+          this.answeredWallMs = this.now();
           this.lastCommitWallMs = this.now();
           // Language primer FIRST — the model locks onto the first audio it hears.
           if (this.primer.pcm) {
@@ -246,7 +278,14 @@ export class VoxtralTranscriber {
             t.commit();
           }
           const queued = this.pendingAudio.splice(0);
-          for (const pcm of queued) t.sendAudio(pcm);
+          for (const pcm of queued) {
+            t.sendAudio(pcm);
+            // Queued audio is as unanswered as live audio: a session that never answers a
+            // re-sent backlog must still read as starved.
+            const sec = pcm.length / 2 / SAMPLE_RATE;
+            this.starvedAudioSec += sec;
+            this.rememberUnanswered(pcm, sec);
+          }
           if (queued.length > 0) this.audioSinceCommit = true;
         },
         onDelta: (text) => { if (this.transport === t) this.handleDelta(text); },
@@ -261,13 +300,29 @@ export class VoxtralTranscriber {
     this.transport = t;
   }
 
-  private recycleSession(reason: string): void {
+  private recycleSession(reason: string, replay: Buffer[] = []): void {
     this.cb.log?.(`[voxtral] session recycle (${reason}, ${Math.round(this.sessionAudioSec)}s audio)`);
     this.finalizeSegment('recycle');
     this.transport?.close();
     this.transport = null;
+    // Audio the dead session never answered goes first into the new one (after the primer).
+    this.pendingAudio.unshift(...replay);
     // Reconnect eagerly so the primer locks the language before speech resumes.
     this.connect();
+  }
+
+  private rememberUnanswered(pcm16: Buffer, sec: number): void {
+    this.starvedPcm.push(pcm16);
+    this.starvedPcmSec += sec;
+    while (this.starvedPcmSec > STARVATION_REPLAY_MAX_SEC && this.starvedPcm.length > 1) {
+      const dropped = this.starvedPcm.shift()!;
+      this.starvedPcmSec -= dropped.length / 2 / SAMPLE_RATE;
+    }
+  }
+
+  private clearUnanswered(): void {
+    this.starvedPcm = [];
+    this.starvedPcmSec = 0;
   }
 
   // ── deltas → segments ────────────────────────────────────────────────────
@@ -279,6 +334,9 @@ export class VoxtralTranscriber {
     }
     this.starvedAudioSec = 0;
     this.starvedWarned = false;
+    this.starvedRecycles = 0;
+    this.answeredWallMs = this.now();
+    this.clearUnanswered();
     if (this.primer.consume(delta)) return;
     if (!this.segText && !this.turnStartMs) this.beginTurn(this.lastAudioTsMs || this.now());
     this.segText += delta;
@@ -424,9 +482,9 @@ export class VoxtralTranscriber {
     // Tail flush — delay conditioning withholds the final words until the model
     // sees audio AFTER them; the capture sends nothing during a pause.
     if (!this.tailFlushed && t?.ready &&
-        now - this.lastAudioWallMs > TAIL_FLUSH_AFTER_MS &&
+        now - this.lastAudioWallMs > this.tailFlushAfterMs &&
         now - this.lastAudioWallMs < this.idleTimeoutMs) {
-      t.sendAudio(TAIL_SILENCE);
+      if (this.tailSilence.length) t.sendAudio(this.tailSilence);
       t.commit();
       this.lastCommitWallMs = now;
       this.audioSinceCommit = false;
@@ -442,16 +500,27 @@ export class VoxtralTranscriber {
     // Context guard — recycle at the first pause past the audio budget, forced
     // past the extra margin even mid-speech.
     if (t?.ready && this.sessionMaxAudioSec > 0 && this.sessionAudioSec >= this.sessionMaxAudioSec &&
-        ((this.tailFlushed && now - this.lastAudioWallMs > TAIL_FLUSH_AFTER_MS) ||
+        ((this.tailFlushed && now - this.lastAudioWallMs > this.tailFlushAfterMs) ||
          this.sessionAudioSec >= this.sessionMaxAudioSec + SESSION_FORCE_EXTRA_SEC)) {
       this.recycleSession('context guard');
       return;
     }
-    if (t?.ready && !this.starvedWarned && this.starvedAudioSec >= STARVATION_WARN_SEC) {
+    if (t?.ready && !this.starvedWarned && this.starvedAudioSec >= STARVATION_WARN_SEC &&
+        now - this.answeredWallMs >= STARVATION_WARN_SEC * 1000) {
       this.starvedWarned = true;
-      this.cb.log?.(`[voxtral] ⚠️ starved — ${this.starvedAudioSec.toFixed(1)}s of audio sent, 0 decoded back` +
-        ` (the server may be serving another stream)`);
-      this.cb.onError?.(new Error(`voxtral starved: ${this.starvedAudioSec.toFixed(1)}s audio unanswered`));
+      const sec = this.starvedAudioSec.toFixed(1);
+      this.cb.onError?.(new Error(`voxtral starved: ${sec}s audio unanswered`));
+      if (this.starvedRecycles < STARVATION_MAX_RECYCLES) {
+        this.starvedRecycles++;
+        const replay = this.starvedPcm;
+        this.clearUnanswered();
+        this.cb.log?.(`[voxtral] ⚠️ starved — ${sec}s of audio sent, 0 decoded back; recycling the session` +
+          ` and re-sending ${replay.length} frame(s) (${this.starvedRecycles}/${STARVATION_MAX_RECYCLES})`);
+        this.recycleSession('starved', replay);
+        return;
+      }
+      this.cb.log?.(`[voxtral] ⚠️ starved — ${sec}s of audio sent, 0 decoded back` +
+        ` (${STARVATION_MAX_RECYCLES} recycles did not help — the server may be down or serving another stream)`);
     }
     // Long idle → close the transport (reopens on next audio).
     if (t && now - this.lastAudioWallMs > this.idleTimeoutMs && this.lastAudioWallMs > 0) {

@@ -246,6 +246,9 @@ function createGmeetLiveBotPipeline(
     {
       language: inv.language ?? undefined,
       onError,
+      // The engine's own lifecycle lines (session recycle, starvation, transport close reason,
+      // CSRC naming) — without them the bot log cannot say WHY a stretch of audio has no text.
+      log: (m) => console.log(`[bot] pipeline(gmeet-live)${m}`),
       publish: (ch, speaker, confirmed, pending) => { publish(ch, speaker, confirmed, true); publish(ch, speaker, pending, false); },
       publishPending: (ch, speaker, segments) => publish(ch, speaker, segments, false),
       clearPending: () => { /* the bot's transcript.v1 egress is append-only; drafts self-replace by id */ },
@@ -554,7 +557,7 @@ export function createBotPipeline(
   // engine (Voxtral / reson8) driving one live session per contributing source (teams-live.ts).
   if (inv.platform === 'teams') {
     const factory = opts.createTeamsTranscriber
-      ?? (live ? teamsLiveTranscriberFactory(liveStreamsConfig(live, inv), inv.language ?? undefined) : undefined);
+      ?? (live ? teamsLiveTranscriberFactory(liveStreamsConfig(live, inv), inv.language ?? undefined, (m) => console.log(`[bot] pipeline(teams-live)${m}`)) : undefined);
     return createTeamsBotPipeline(transcribe, sink, opts.onError, factory, opts.onObservation, inv.botName);
   }
   if (isMixedLanePlatform(inv.platform)) {

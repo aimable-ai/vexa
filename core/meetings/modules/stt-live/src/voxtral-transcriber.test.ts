@@ -13,6 +13,8 @@
  *   8. context guard (opt-in) recycles the session at the audio budget on a pause;
  *      the default policy keeps ONE session across long speech and multi-minute pauses
  *   9. pending drafts publish under the live-resolved name (stable text)
+ *  10. a starved session (audio sent, nothing decoded) is recycled and the unanswered audio
+ *      re-sent into the fresh session; bounded to a few tries when the server is simply down
  */
 import assert from 'node:assert/strict';
 import { VoxtralTranscriber, type VoxtralSegment } from './voxtral-transcriber.js';
@@ -223,7 +225,7 @@ function harness(language?: string, cfg: { idleTimeoutMs?: number; sessionMaxAud
   h.feed(100); await h.flushMicrotasks();
   assert.equal(h.transports.length, 1);
   // Pump 241s of audio in slices, keeping the clock moving.
-  for (let i = 0; i < 60; i++) { h.tick(4000); h.feed(4000); }
+  for (let i = 0; i < 60; i++) { h.tick(4000); h.feed(4000); h.transport().delta(' woord'); }   // answered = not starved
   // Pause → tail flush marks the pause, then the guard recycles.
   h.tick(900); h.t.sweep();           // tail flush
   h.t.sweep();                        // context guard path
@@ -236,7 +238,7 @@ function harness(language?: string, cfg: { idleTimeoutMs?: number; sessionMaxAud
 {
   const h = harness();
   h.feed(100); await h.flushMicrotasks();
-  for (let i = 0; i < 150; i++) { h.tick(4000); h.feed(4000); }   // 10 min of speech
+  for (let i = 0; i < 150; i++) { h.tick(4000); h.feed(4000); h.transport().delta(' woord'); }   // 10 min of answered speech
   h.tick(900); h.t.sweep(); h.t.sweep();
   assert.equal(h.transports.length, 1, 'no context-guard recycle by default');
   h.tick(240_000); h.t.sweep();                                     // 4 min pause
@@ -244,6 +246,40 @@ function harness(language?: string, cfg: { idleTimeoutMs?: number; sessionMaxAud
   assert.ok(!h.transports[0].closed, 'transport still open');
   h.tick(120_000); h.t.sweep();                                     // 6 min pause
   assert.ok(h.transports[0].closed, 'idle close after 5 min');
+  await h.t.dispose();
+}
+
+// ── 10: starvation → recycle + re-send the unanswered audio ─────────────────
+{
+  const h = harness();
+  h.feed(1000); await h.flushMicrotasks();
+  h.transport().delta('Ja.');                       // a healthy session answered once
+  const t0 = h.transport();
+  const before = t0.audioBytes;
+  for (let i = 0; i < 9; i++) { h.tick(1000); h.feed(1000); }   // 9 s of speech, no deltas
+  const unanswered = t0.audioBytes - before;
+  h.t.sweep();
+  assert.equal(h.transports.length, 2, 'starved session recycled onto a fresh transport');
+  assert.ok(t0.closed, 'starved transport closed');
+  await h.flushMicrotasks();                         // onOpen drains the re-send queue
+  const t1 = h.transports[1];
+  assert.equal(t1.audioBytes, unanswered, 'exactly the unanswered audio re-sent (primer-less)');
+  // The fresh session answers → starvation bookkeeping resets, no further recycle.
+  t1.delta('Oké.');
+  h.tick(1000); h.feed(1000); h.t.sweep();
+  assert.equal(h.transports.length, 2, 'no recycle while deltas flow');
+  await h.t.dispose();
+}
+
+// ── 10b: a server that never answers is not hammered forever ─────────────────
+{
+  const h = harness();
+  h.feed(100); await h.flushMicrotasks();
+  for (let round = 0; round < 6; round++) {
+    for (let i = 0; i < 9; i++) { h.tick(1000); h.feed(1000); }
+    h.t.sweep(); await h.flushMicrotasks();
+  }
+  assert.equal(h.transports.length, 4, 'three starved recycles, then the session is left alone');
   await h.t.dispose();
 }
 
