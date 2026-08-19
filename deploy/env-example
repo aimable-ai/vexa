@@ -36,6 +36,10 @@ ADMIN_TOKEN=changeme
 # `make build` writes a local tag to .last-tag which overrides this.
 IMAGE_TAG=latest
 BROWSER_IMAGE=vexaai/vexa-bot:latest
+# captured-signal.v1 tape per meeting bot for exact offline replay (AIM-1627): 1=on
+VEXA_CAPTURE_SIGNAL=0
+VEXA_CAPTURE_SIGNAL_HOST_DIR=/tmp/vexa-captured-signal
+#VEXA_CAPTURE_SIGNAL_MAX_BYTES=262144000
 
 
 # Database (embedded postgres by default)
