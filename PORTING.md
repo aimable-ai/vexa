@@ -198,14 +198,19 @@ preflight (503 + 60 s spawn-refusal on bad URL/token) behaves for all three.
   `buildCombinedStream` per-track + `follow()` rescan, closed with the tap. Old fork refs
   13e1a028, 1cd02d4d.
 - Chrome tab crash → graceful leave; bot mem 4Gi (c9991f0a); runtime profile limits
-  (de40c581) — re-express against runtime kernel profiles.
+  (de40c581): **PORTED 2026-08-19.** `orchestrator.crash()` ends an ACTIVE bot as
+  `failed(active, join_failure, "chrome tab crashed")` (in-contract; pre-active the join
+  throws on its own), wired from `page.on('crash')` in `bot/src/index.ts`. Memory cap =
+  `DOCKER_MEMORY_LIMIT` on the docker backend (`HostConfig.Memory`; compose default 4g,
+  unset = none; declared in `config.v1.json`).
+- Meet cold-start join (prod-only 3b1a3d6d, was never on aim-1377): `page.goto(…, commit,
+  60 s)` — PORTED 2026-08-19; name-input wait already 120 s, no global default timeout.
 - api-gateway 10-min transcribe timeout (f0f4cb6f): **obsolete** — the re-transcribe
   endpoint is a KNOWN_GAPS no-op in 0.12; deferred-transcribe path differs. Verify
   whether `transcription_tier: deferred` covers the need.
 - meeting-api batch-commit fix (ff09f5f2): likely obsolete (collector rewritten);
   verify under load.
-- postgres idle_in_transaction_session_timeout 600 s (c513e3cc): still wanted;
-  compose-level setting.
+- postgres idle_in_transaction_session_timeout 600 s (c513e3cc): PORTED 2026-08-19 (compose).
 - hallucination-filter tweak: superseded by upstream 6aae7478 phrase lists + gates.
 
 ### P6. Closed / relocated items
@@ -314,7 +319,7 @@ already covers test/demo/multitenant/hr2day (not lendahand).
       image is 6 GB — build on the box. M
 - [ ] Backups (pg_dump cron, minio mirror) + recording retention (MinIO ILM on
       `vexa/recordings`; 0.12 has no retention knob, ~1 MB/min). S
-- [ ] pg `idle_in_transaction_session_timeout=600000`, bot `memoryMb` cap in profile. S
+- [x] pg `idle_in_transaction_session_timeout=600000`, bot memory cap (`DOCKER_MEMORY_LIMIT=4g`). 2026-08-19
 - [ ] Monitoring: log-monitor sidecar for meeting-api/runtime, `/health` probe, disk
       alert; `audiocpp-server` on pii has restart=no. S
 - [ ] Docker hygiene: prune (~45 GB reclaimable, disk 82 %), `log-opts max-size`,
@@ -505,3 +510,11 @@ Upstream knobs relevant to Teams tuning: `VEXA_HINT_MIN_COVERAGE` 0.35,
   0.237. Recycle (5a96294d) stays as the safety net — with no silence in the re-sent buffer it can
   no longer re-poison the fresh session. Hangover itself is not yet measured live (the tape holds
   only gated frames); first meeting on the rebuilt bot gives the first hangover capture.
+- 2026-08-19: gap audit against the PROD branch (`origin/aimable-meet` @ cfedffda + box-local patches —
+  PORTING had only diffed aim-1377); findings in artifact ce60cedb. Fixed same day: reson8 flush-on-close
+  regression (final adopted in `requestFinal`, +tests 5b), `GET /bots/status` counts `needs_help`,
+  `orchestrator.crash()` + `page.on('crash')`, `DOCKER_MEMORY_LIMIT`, Meet goto commit/60 s, pg idle
+  600 s. Still open from the audit (platform side unless noted): share-transcript bogus URL, batch
+  transcribe UI, `speaker_key csrc:N` / empty speaker handling, `MEETING_ADMIN_API_URL` per tenant,
+  private-webhook opt-out (fork), junkPhrases unwired (fork), `#live`-only HTTP-live dispatch (fork),
+  gateway-429 vs concurrency, dead paths still offered in UI, 42 `test` commits unmerged.
