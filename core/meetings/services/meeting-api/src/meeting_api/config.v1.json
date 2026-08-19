@@ -447,6 +447,15 @@
    ]
   },
   {
+   "key": "ALLOW_PRIVATE_WEBHOOKS",
+   "class": "defaulted",
+   "default": "false",
+   "description": "Fork, self-hosted opt-out: let customer webhooks target private/loopback/internal hosts (the receiving application on the same machine or LAN, e.g. host.docker.internal). Off = OWASP SSRF guard, deliveries to such targets land as `blocked`.",
+   "targets": [
+    "compose"
+   ]
+  },
+  {
    "key": "VEXA_SYSTEM_WEBHOOK_ALLOW_PRIVATE_HTTP",
    "class": "defaulted",
    "default": "false",

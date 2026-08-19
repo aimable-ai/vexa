@@ -30,6 +30,7 @@ resolution deterministically.
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 from typing import Any, Callable, List, Optional
 from urllib.parse import urlparse
@@ -67,6 +68,15 @@ _BLOCKED_HOSTNAMES = frozenset([
     "postgres",
     "mcp",
 ])
+
+
+def _allow_private() -> bool:
+    """Self-hosted opt-out (fork, same knob as the 0.10 `webhook_url.py`): the host application
+    that receives our webhooks may live on the SAME machine or a private network, reachable only
+    via host.docker.internal / 127.0.0.1 / a LAN IP — with the guard on, every delivery lands as
+    `blocked` and nothing else tells the operator. Off by default; scheme/hostname-syntax checks
+    still apply. Read per call so tests (and a live reload) see the env."""
+    return os.getenv("ALLOW_PRIVATE_WEBHOOKS", "").strip().lower() in ("1", "true", "yes")
 
 
 class SSRFError(ValueError):
@@ -115,12 +125,14 @@ def _is_blocked_ip(ip_str: str) -> bool:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
         return True  # not a valid IP — block
+    if _allow_private():
+        return False
     nets = _BLOCKED_IPV4_NETWORKS if ip.version == 4 else _BLOCKED_IPV6_NETWORKS
     return any(ip in net for net in nets)
 
 
 def _is_blocked_hostname(hostname: str) -> bool:
-    return hostname.lower() in _BLOCKED_HOSTNAMES
+    return not _allow_private() and hostname.lower() in _BLOCKED_HOSTNAMES
 
 
 def _resolve_host(hostname: str) -> List[str]:

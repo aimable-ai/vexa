@@ -79,3 +79,22 @@ async def test_sink_blocks_ssrf_without_touching_transport(receiver):
     result = await sink.deliver("http://localhost/hook", env, "s", events_config={"meeting.completed": True})
     assert result.status == "blocked"
     assert receiver.received == []
+
+
+# ── fork: ALLOW_PRIVATE_WEBHOOKS (self-hosted opt-out) ───────────────────────────────────────────
+@pytest.mark.parametrize("url", [
+    "http://host.docker.internal:6060/v1/meetings/webhook",
+    "http://127.0.0.1:6060/hook",
+    "http://192.168.1.20:8080/hook",
+    "http://localhost:6060/hook",
+])
+def test_allow_private_webhooks_opt_out(monkeypatch, url):
+    monkeypatch.setenv("ALLOW_PRIVATE_WEBHOOKS", "1")
+    pinned = validate_webhook_url(url, resolver=lambda h: ["192.168.1.20"])
+    assert str(pinned) == url
+
+
+def test_allow_private_webhooks_default_off(monkeypatch):
+    monkeypatch.delenv("ALLOW_PRIVATE_WEBHOOKS", raising=False)
+    with pytest.raises(SSRFError):
+        validate_webhook_url("http://127.0.0.1:6060/hook")
