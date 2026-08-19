@@ -18,7 +18,8 @@
  *   - segment boundaries gate on AUDIO silence (deltas arrive in bursts per
  *     commit — a delta-only gap fires between every commit and chops sentences);
  *   - delay conditioning (~960 ms) withholds an utterance's final words until it
- *     sees audio AFTER them → on speech pause push 1200 ms synthetic silence;
+ *     sees audio AFTER them → the capture keeps ~1.5 s of the speaker's real trailing
+ *     audio flowing (hangover); synthetic silence is NOT pushed (see TAIL_SILENCE_MS);
  *   - every session (re)open is a cold start — primer replay, language re-lock,
  *     delay warm-up — and the first utterance after one is the one that gets
  *     mangled, so a session lives for the whole meeting: audio.cpp bounds its own
@@ -43,8 +44,13 @@ const COMMIT_INTERVAL_MS = 750;
 const SEGMENT_GAP_MS = 800;
 /** Speech-pause threshold that triggers the tail flush. */
 const TAIL_FLUSH_AFTER_MS = 700;
-/** Synthetic silence pushed on speech pause — must exceed the 960 ms delay conditioning. */
-const TAIL_SILENCE_MS = 1200;
+/** Synthetic silence pushed on speech pause. 0 = NONE (default since 2026-08-19): a 1.2 s block of
+ *  fabricated silence dropped mid-utterance (the 700 ms threshold fires on ordinary intra-sentence
+ *  pauses) locks audio.cpp's Voxtral decoder into a pad-only state for 10–25 s of real speech —
+ *  meeting 14 lost 71 words; replaying its capture: silence on → hole in 3/3 runs, off → 0/2.
+ *  The ~1 s delay conditioning is instead satisfied by the capture's hangover of the speaker's REAL
+ *  trailing audio (gmeet-capture `hangoverMs`). `tailSilenceMs` remains as an experiment knob. */
+const TAIL_SILENCE_MS = 0;
 /** Force-finalize a segment at this many characters. */
 const MAX_SEGMENT_CHARS = 600;
 /** A sentence end finalizes mid-speech only past this length (abbreviation guard) —

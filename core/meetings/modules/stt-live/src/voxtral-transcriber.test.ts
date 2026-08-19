@@ -5,7 +5,7 @@
  * Pins the ported behaviors from PORTING.md P1/P2:
  *   1. deltas accumulate → finalize on sentence end + quiet audio; hint names the turn
  *   2. commit cadence 750 ms — the server only transcribes committed audio
- *   3. tail flush on speech pause (synthetic silence + commit, once per pause)
+ *   3. tail flush on speech pause (commit, once per pause; NO synthetic silence by default)
  *   4. segment boundary gates on AUDIO silence, not delta silence
  *   5. single-word segments survive ("Ja.") — no short-segment hallucination drop
  *   6. primer transcript discarded; primer residue never published
@@ -39,7 +39,7 @@ const isAllZero = (b: Buffer): boolean => b.every((x) => x === 0);
 
 interface Published { speaker: string; segs: VoxtralSegment[]; kind: 'confirmed' | 'pending' | 'rename' }
 
-function harness(language?: string, cfg: { idleTimeoutMs?: number; sessionMaxAudioSec?: number } = {}) {
+function harness(language?: string, cfg: { idleTimeoutMs?: number; sessionMaxAudioSec?: number; tailSilenceMs?: number } = {}) {
   let clock = 1_000_000_000_000;   // fixed epoch base — no Date.now in tests
   const out: Published[] = [];
   const renames: Array<{ from: string; to: string; ids: string[] }> = [];
@@ -132,17 +132,30 @@ function harness(language?: string, cfg: { idleTimeoutMs?: number; sessionMaxAud
   h.tick(900); h.feed(100);
   h.t.sweep();
   assert.equal(h.confirmed().length, 0, 'no finalize while audio continues');
-  // Audio pauses > 700ms → tail flush (synthetic silence + commit), once.
+  // Audio pauses > 700ms → tail flush (commit), once — and NO synthetic silence: a fabricated
+  // silence block locks the decoder into pad-only (meeting 14, 2026-08-19).
   h.tick(900);
-  const silBefore = tr.silenceSends;
+  const silBefore = tr.silenceSends, cBefore = tr.commits;
   h.t.sweep();
-  assert.equal(tr.silenceSends, silBefore + 1, 'tail silence pushed on pause');
+  assert.equal(tr.commits, cBefore + 1, 'tail flush commits on pause');
+  assert.equal(tr.silenceSends, silBefore, 'no synthetic silence pushed on pause');
   h.t.sweep();
-  assert.equal(tr.silenceSends, silBefore + 1, 'tail flush fires once per pause');
+  assert.equal(tr.commits, cBefore + 1, 'tail flush fires once per pause');
   // Both delta AND audio silent past the gap → finalize.
   h.tick(900);
   h.t.sweep();
   assert.equal(h.confirmed().length, 1, 'gap finalize after audio+delta silence');
+  await h.t.dispose();
+}
+
+// The experiment knob still injects silence when asked (replay A/B harness).
+{
+  const h = harness(undefined, { tailSilenceMs: 1200 });
+  h.feed(400); await h.flushMicrotasks();
+  const tr = h.transport();
+  h.tick(900);
+  h.t.sweep();
+  assert.equal(tr.silenceSends, 1, 'tailSilenceMs=1200 pushes synthetic silence on pause');
   await h.t.dispose();
 }
 

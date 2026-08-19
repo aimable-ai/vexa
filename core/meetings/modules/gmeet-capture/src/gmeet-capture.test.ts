@@ -6,6 +6,7 @@
  */
 import { pickBoundName } from "./gmeet-capture-v1.js";
 import { GmeetChannelBinder } from "./gmeet-channel-binder.js";
+import { createHangoverGate } from "./gmeet-capture.js";
 
 let failed = 0;
 const check = (name: string, cond: boolean) => { console.log(`  ${cond ? "✅" : "❌"} ${name}`); if (!cond) failed++; };
@@ -29,6 +30,19 @@ const b2 = new GmeetChannelBinder({ minScore: 2.5 });
 b2.recordGlow("Zoe", false, 0);
 b2.nameForChannel(7, 0, 0.5);                             // a single loud frame → score 1 < minScore
 check("below the confidence floor → UNKNOWN (leak-free, never a guess)", b2.nameForChannel(7, 10, 0) === undefined);
+
+// createHangoverGate — a speaker's REAL trailing audio follows every utterance (no synthetic silence
+// is ever needed downstream); silence between turns still does not pass.
+{
+  const g = createHangoverGate(0.005, 1500, 16000);   // 4096-sample chunks = 256 ms
+  check("quiet before any speech → dropped", g.pass(0.001, 4096) === false);
+  check("loud chunk → passes", g.pass(0.4, 4096) === true);
+  let passed = 0;
+  while (g.pass(0.001, 4096)) passed++;
+  check("~1.5 s of quiet chunks pass after the last loud one (hangover)", passed === 6);
+  check("then quiet is dropped again", g.pass(0.001, 4096) === false);
+  check("a loud chunk re-arms the hangover", g.pass(0.4, 4096) && g.pass(0.001, 4096));
+}
 
 if (failed) { console.error(`\n❌ gmeet-capture: ${failed} checks FAILED.`); process.exit(1); }
 console.log(`\n✅ gmeet-capture: pure cores pass — honest glow binding + energy↔glow channel correlation. (DOM capture is live-validated.)`);

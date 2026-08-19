@@ -30,6 +30,13 @@ export interface GmeetCaptureOptions {
   targetSampleRate?: number;   // default 16000
   bufferSize?: number;         // default 4096
   silenceThreshold?: number;   // default 0.005 — skip near-silent chunks
+  /** Keep emitting a speaker's REAL below-threshold audio this long after their last loud chunk
+   *  (default 1500). The live engine is delay-conditioned (~1 s): it releases a turn's last words
+   *  only once it hears audio AFTER them, and the synthetic silence the transcriber used to push
+   *  instead can lock audio.cpp's Voxtral decoder into a pad-only state for 10–25 s of real speech
+   *  (meeting 14, 2026-08-19). Room tone is what the model was trained on; a second of it per pause
+   *  is the whole GPU cost. */
+  hangoverMs?: number;
   rescanMs?: number;           // default 5000 — discover late joiners + track swaps
   findRetries?: number;        // default 10
   findDelayMs?: number;        // default 2000
@@ -45,10 +52,27 @@ export interface GmeetCapture {
   channelOfTrack(prefix: string): number | undefined;
 }
 
+/** Silence gate with hangover: a chunk passes when it is loud, or when a loud chunk was heard within
+ *  the last `hangoverMs` of audio — so a speaker's REAL trailing room tone follows every utterance
+ *  (the delay-conditioned live engine needs ~1 s of audio after the last word to release it). Pure;
+ *  exported for tests. */
+export function createHangoverGate(threshold: number, hangoverMs: number, sampleRate: number): { pass(peak: number, samples: number): boolean } {
+  let left = 0; // ms of below-threshold audio still to pass
+  return {
+    pass(peak, samples) {
+      if (peak > threshold) { left = hangoverMs; return true; }
+      if (left <= 0) return false;
+      left -= (samples / sampleRate) * 1000;
+      return true;
+    },
+  };
+}
+
 export function createGmeetCapture(opts: GmeetCaptureOptions): GmeetCapture {
   const log = opts.log || (() => { /* silent */ });
   const SR = opts.targetSampleRate ?? 16000;
   const SILENCE = opts.silenceThreshold ?? 0.005;
+  const HANGOVER_MS = opts.hangoverMs ?? 1500;
   const RESCAN = opts.rescanMs ?? 5000;
   const FIND_RETRIES = opts.findRetries ?? 10;
   const FIND_DELAY = opts.findDelayMs ?? 2000;
@@ -104,12 +128,13 @@ export function createGmeetCapture(opts: GmeetCaptureOptions): GmeetCapture {
       // which duplicates/drops buffers under main-thread load — the captured-audio
       // stutter. connectElement is sync, so wire the node when addModule resolves.
       let seen = 0, emitted = 0; // L4 frame-flow diagnostic
+      const gate = createHangoverGate(SILENCE, HANGOVER_MS, SR);
       createPcmCaptureNode(ctx, (data) => {
         if (!running) return;
         seen++;
         let maxVal = 0;
         for (let i = 0; i < data.length; i++) { const a = Math.abs(data[i]); if (a > maxVal) maxVal = a; }
-        if (maxVal > SILENCE) { emitted++; if (emitted === 1 || emitted % 100 === 0) log(`stream ${index} AUDIO seen=${seen} emitted=${emitted} max=${maxVal.toFixed(3)}`); opts.onAudio(index, data); } // worklet already yields a fresh copy
+        if (gate.pass(maxVal, data.length)) { emitted++; if (emitted === 1 || emitted % 100 === 0) log(`stream ${index} AUDIO seen=${seen} emitted=${emitted} max=${maxVal.toFixed(3)}`); opts.onAudio(index, data); } // worklet already yields a fresh copy
         else if (seen % 250 === 0) log(`stream ${index} silent seen=${seen} emitted=${emitted} max=${maxVal.toFixed(4)} ctx=${ctx.state}`);
       }).then((node) => { b.node = node; node.connect(ctx.destination); if (b.source) b.source.connect(node); })
         .catch((err: any) => console.log(`[gmeet-capture] worklet init failed: ${err?.message}`));

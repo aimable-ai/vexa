@@ -48,6 +48,9 @@ async function main(): Promise<void> {
   const voxtral = {
     idleTimeoutMs: Number(process.env.IDLE_MS || '300000'), sessionMaxAudioSec: Number(process.env.RECYCLE_SEC || '0'),
     languageRepair: process.env.REPAIR_URL ? { url: process.env.REPAIR_URL, apiToken: process.env.REPAIR_TOKEN || undefined } : undefined,
+    ...(process.env.TAIL_SILENCE_MS !== undefined ? { tailSilenceMs: Number(process.env.TAIL_SILENCE_MS) } : {}),
+    ...(process.env.TAIL_FLUSH_MS !== undefined ? { tailFlushAfterMs: Number(process.env.TAIL_FLUSH_MS) } : {}),
+    ...(process.env.TAIL_NOISE_LSB !== undefined ? { tailNoiseLsb: Number(process.env.TAIL_NOISE_LSB) } : {}),
   };
   const { header, frames } = await load(inPath, START, END);
   console.error(`[replay] ${frames.length} frames, ${header.native_meeting_id}, mode=${MODE} primer=${primer} slice=${START}-${END}`);
