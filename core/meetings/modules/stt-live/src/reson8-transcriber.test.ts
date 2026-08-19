@@ -8,6 +8,7 @@
  *      stops the moment the turn finalizes
  *   4. hint names the turn (binder window match); no hint → provisional seg_N
  *   5. dispose sends flush_request and waits for flush_confirmation
+ *   5b. the final answering the flush (dispose / idle close) is kept
  *   6. junk finals filtered
  */
 import assert from 'node:assert/strict';
@@ -157,6 +158,29 @@ function harness(language?: string) {
   s.message({ type: 'flush_confirmation' });
   await disposal;
   assert.ok(s.closed, 'socket closed after flush confirmation');
+}
+
+// ── 5b: the final that answers flush_request is kept (dispose AND idle close) ──
+{
+  const h = harness();
+  h.feed(300); h.open();
+  const s = h.socket();
+  const disposal = h.t.dispose();
+  s.message({ type: 'transcript', text: 'tot ziens allemaal', is_final: true, start_ms: 0, duration_ms: 800 });
+  s.message({ type: 'flush_confirmation' });
+  await disposal;
+  assert.equal(h.confirmed().length, 1, 'final answering the flush is published on dispose');
+  assert.equal(h.confirmed()[0].segs[0].text, 'tot ziens allemaal');
+}
+{
+  const h = harness();
+  h.feed(300); h.open();
+  const s = h.socket();
+  h.tick(21_000); h.t.sweep();                      // idle close → flush_request on the retired socket
+  assert.ok(s.sent.some((d) => typeof d === 'string' && d.includes('flush_request')), 'idle close flushes');
+  s.message({ type: 'transcript', text: 'laatste woorden', is_final: true, start_ms: 0, duration_ms: 600 });
+  assert.equal(h.confirmed().length, 1, 'final answering the idle-close flush is published');
+  await h.t.dispose();
 }
 
 // ── 6: junk finals filtered ──────────────────────────────────────────────────

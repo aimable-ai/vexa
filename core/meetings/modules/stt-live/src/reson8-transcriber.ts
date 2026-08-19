@@ -295,8 +295,11 @@ export class Reson8Transcriber {
     this.cb.rename(old, name, rec.segments);
   }
 
-  /** Ask the server to finalize now; resolve once the final lands (the normal
-   *  message handler is still armed and emits it) or FLUSH_GRACE_MS elapses. */
+  /** Ask the server to finalize now; resolve once flush_confirmation lands or
+   *  FLUSH_GRACE_MS elapses. The caller has already retired this socket
+   *  (`this.ws` cleared / generation bumped), so the normal message handler
+   *  ignores it — the final that answers the flush is ADOPTED here, otherwise
+   *  the speaker's last words are lost. */
   private requestFinal(ws: Reson8Socket): Promise<void> {
     return new Promise<void>((resolve) => {
       let done = false;
@@ -310,7 +313,12 @@ export class Reson8Transcriber {
       const timer = setTimeout(finish, this.cfg.sweepIntervalMs === 0 ? 0 : FLUSH_GRACE_MS);
       ws.on('message', (data) => {
         const msg = parseMessage(data);
-        if (msg?.type === 'flush_confirmation') finish();
+        if (!msg) return;
+        if (msg.type === 'transcript' && msg.is_final !== false && typeof msg.text === 'string' && msg.text) {
+          this.handleTranscript(msg);
+        } else if (msg.type === 'flush_confirmation') {
+          finish();
+        }
       });
       try { ws.send(JSON.stringify({ type: 'flush_request' })); } catch { finish(); }
     });
