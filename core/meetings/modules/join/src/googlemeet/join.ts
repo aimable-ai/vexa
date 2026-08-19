@@ -317,7 +317,11 @@ export async function joinGoogleMeeting(
   botConfig: BotConfig
 ): Promise<void> {
   const navUrl = withPinnedMeetLocale(meetingUrl, resolveBotUiLocale());
-  await page.goto(navUrl, { waitUntil: "domcontentloaded" });
+  // "commit" returns as soon as the navigation commits: Meet's initial page pulls heavy scripts
+  // and on a cold-started Chromium DOMContentLoaded has exceeded the default 30 s (join died with
+  // TimeoutError before the name input was ever looked for). Everything after this waits on
+  // specific selectors anyway. 60 s backstop like the other platforms' joins.
+  await page.goto(navUrl, { waitUntil: "commit", timeout: 60000 });
   await page.bringToFront();
 
   // Take screenshot after navigation
