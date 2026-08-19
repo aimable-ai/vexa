@@ -14,6 +14,6 @@ export { createGmeetPipeline } from './gmeet-pipeline.js';
 export type { GmeetPipeline, GmeetPipelineOptions } from './gmeet-pipeline.js';
 export { SpeakerStreamManager } from './speaker-streams.js';
 export type { SpeakerStreamManagerConfig } from './speaker-streams.js';
-export { isHallucination } from './hallucination-filter.js';
+export { isHallucination, hallucinationPhrases } from './hallucination-filter.js';
 export { setLogger } from './log.js';
 export type { TranscriptSegment, TranscriptSink, TimestampedWord, TranscriptMeta, Source } from './contracts/transcript-v1.js';

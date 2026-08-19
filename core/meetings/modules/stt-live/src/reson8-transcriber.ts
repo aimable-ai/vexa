@@ -50,6 +50,8 @@ export interface Reson8TranscriberConfig {
   sweepIntervalMs?: number;
   /** Silence-tail ceiling after speech (ms); the tail stops as soon as the turn finalizes. Default 5000. */
   tailBudgetMs?: number;
+  /** Known-hallucination phrases (lower-cased) dropped from finals; see junk-filter. */
+  junkPhrases?: ReadonlySet<string>;
 }
 
 /** The slice of a WebSocket this engine uses — injectable for tests. */
@@ -256,7 +258,7 @@ export class Reson8Transcriber {
           .map((p) => { const a = this.captureTime(p.a, 'start'); return { text: p.text, a, b: Math.max(a + 1, this.captureTime(p.b, 'end')) }; })
       : [{ text, a: startMs, b: endMs }];
     for (const p of pieces) {
-      if (isJunk(p.text)) { this.cb.log?.(`[reson8] [FILTERED] junk: "${p.text.slice(0, 60)}"`); continue; }
+      if (isJunk(p.text, this.cfg.junkPhrases)) { this.cb.log?.(`[reson8] [FILTERED] junk: "${p.text.slice(0, 60)}"`); continue; }
       const clusterId = `seg_${this.turnCounter++}`;
       const seg: VoxtralSegment = {
         text: p.text, startMs: p.a, endMs: p.b, language: this.cb.language ?? '',

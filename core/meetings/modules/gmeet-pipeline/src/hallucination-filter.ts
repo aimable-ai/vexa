@@ -37,6 +37,12 @@ function loadPhrases(): Set<string> {
   return phrases;
 }
 
+/** The loaded phrase DB (lower-cased lines of src/hallucinations/*.txt) — for lanes that run
+ *  their own, lighter filter (the live engines) but want the same phrase knowledge. */
+export function hallucinationPhrases(): ReadonlySet<string> {
+  return loadPhrases();
+}
+
 /**
  * Returns true if the text is a hallucination and should be dropped.
  */

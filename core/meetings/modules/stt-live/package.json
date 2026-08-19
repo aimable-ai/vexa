@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "tsx src/language-repair.test.ts && tsx src/voxtral-transcriber.test.ts && tsx src/reson8-transcriber.test.ts && tsx src/live-transport.test.ts && tsx src/live-speaker-streams.test.ts",
+    "test": "tsx src/junk-filter.test.ts && tsx src/language-repair.test.ts && tsx src/voxtral-transcriber.test.ts && tsx src/reson8-transcriber.test.ts && tsx src/live-transport.test.ts && tsx src/live-speaker-streams.test.ts",
     "check:isolation": "node scripts/check-isolation.js"
   },
   "dependencies": {

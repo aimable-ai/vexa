@@ -22,6 +22,7 @@
  */
 import {
   createGmeetPipeline,
+  hallucinationPhrases,
   type TranscriptSink as LaneTranscriptSink,
   type TranscriptSegment as LaneSegment,
   type SpeakerStreamManagerConfig,
@@ -461,6 +462,7 @@ function createMixedBotPipeline(
  *    wss://…reson8…      → the RESON8 managed realtime service
  *    ws(s)://…           → vLLM Voxtral realtime
  *    http(s)://…#live    → Voxtral over audio.cpp HTTP-live (fragment strips before use)
+ *    http(s)://…/transcriptions/live → same (audio.cpp's own path; the 0.10 fork inferred on it)
  *    anything else       → null (the chunked whisper lane, stock behavior)
  *  Mixed lane only — the gmeet per-channel lane keeps its whisper path. Every live
  *  engine's pending drafts are model-committed (stable): consumers may act on
@@ -473,7 +475,7 @@ export function liveEngineForUrl(url: string | null | undefined): LiveEngine {
     try { if (/reson8/i.test(new URL(url).host)) return 'reson8'; } catch { return null; }
     return 'voxtral';
   }
-  if (/^https?:\/\//i.test(url) && /#live$/i.test(url)) return 'voxtral';
+  if (/^https?:\/\//i.test(url) && (/#live$/i.test(url) || /\/transcriptions\/live\/?(\?|$)/i.test(url))) return 'voxtral';
   return null;
 }
 
@@ -496,16 +498,18 @@ function liveStreamsConfig(engine: Exclude<LiveEngine, null>, inv: Invocation): 
     url: stripLiveFragment(inv.transcriptionServiceUrl ?? ''),
     apiToken: inv.transcriptionServiceToken ?? undefined,
     model: inv.transcriptionModel ?? undefined,
-    voxtral: { languageRepair: languageRepairFromEnv() },
+    voxtral: { languageRepair: languageRepairFromEnv(), junkPhrases: hallucinationPhrases() },
+    reson8: { junkPhrases: hallucinationPhrases() },
   };
 }
 
 function createLiveTranscriberFactory(engine: Exclude<LiveEngine, null>, inv: Invocation): MixedTranscriberFactory {
   const url = stripLiveFragment(inv.transcriptionServiceUrl ?? '');
+  const junkPhrases = hallucinationPhrases();
   return (cb) => engine === 'reson8'
-    ? Reson8Transcriber.create({ url, apiKey: inv.transcriptionServiceToken ?? '' }, cb)
+    ? Reson8Transcriber.create({ url, apiKey: inv.transcriptionServiceToken ?? '', junkPhrases }, cb)
     : VoxtralTranscriber.create(
-        { url, apiToken: inv.transcriptionServiceToken ?? undefined, model: inv.transcriptionModel ?? undefined, languageRepair: languageRepairFromEnv() }, cb);
+        { url, apiToken: inv.transcriptionServiceToken ?? undefined, model: inv.transcriptionModel ?? undefined, languageRepair: languageRepairFromEnv(), junkPhrases }, cb);
 }
 
 /** Build the real STT transcribe closure from invocation.v1 — language baked into the call so
