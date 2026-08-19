@@ -518,3 +518,11 @@ Upstream knobs relevant to Teams tuning: `VEXA_HINT_MIN_COVERAGE` 0.35,
   transcribe UI, `speaker_key csrc:N` / empty speaker handling, `MEETING_ADMIN_API_URL` per tenant,
   private-webhook opt-out (fork), junkPhrases unwired (fork), `#live`-only HTTP-live dispatch (fork),
   gateway-429 vs concurrency, dead paths still offered in UI, 42 `test` commits unmerged.
+- 2026-08-19 (later): fork-side leftovers done — live engines get the shared hallucination phrase DB +
+  3–6-word loop check (`junkPhrases` was never wired), HTTP-live also inferred from audio.cpp's
+  `/transcriptions/live` path, `ALLOW_PRIVATE_WEBHOOKS` opt-out (config.v1 + compose). **Deployed to
+  the v012 stack on the vexa box as `aim1467-12`** (bot / runtime / meeting-api, built from the rsynced
+  `~/vexa-012-src` @ 11dbc837); `docker-compose.override.yml` now carries ALL fork pins: image tags,
+  `BROWSER_IMAGE`, `DOCKER_MEMORY_LIMIT=4g`, `ALLOW_PRIVATE_WEBHOOKS=true`, postgres idle 600 s (the
+  auto-mode classifier blocks `.env` edits — keep pins in the override). Old bot tags 8/9/10 removed;
+  `-11` kept for rollback. Disk 74 %.
