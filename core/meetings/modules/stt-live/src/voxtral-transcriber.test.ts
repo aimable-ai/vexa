@@ -67,9 +67,9 @@ function harness(language?: string, cfg: { idleTimeoutMs?: number; sessionMaxAud
       rename: (from, to, segs) => renames.push({ from, to, ids: segs.map((s) => s.segmentId) }),
     },
   );
-  const feed = (ms: number) => {   // ms of speech-shaped audio at the current clock
+  const feed = (ms: number, level = 0.1) => {   // ms of speech-shaped audio at the current clock
     const samples = Math.floor((ms / 1000) * 16000);
-    const pcm = new Float32Array(samples).fill(0.1);
+    const pcm = new Float32Array(samples).fill(level);
     t.feedAudio(pcm, clock);
   };
   return {
@@ -278,7 +278,7 @@ function harness(language?: string, cfg: { idleTimeoutMs?: number; sessionMaxAud
   assert.ok(t0.closed, 'starved transport closed');
   await h.flushMicrotasks();                         // onOpen drains the re-send queue
   const t1 = h.transports[1];
-  assert.equal(t1.audioBytes, unanswered, 'exactly the unanswered audio re-sent (primer-less)');
+  assert.equal(t1.audioBytes, 4 * 16000 * 2, 'only the last 4 s of unanswered audio re-sent — a longer burst wedges the engine');
   // The fresh session answers → starvation bookkeeping resets, no further recycle.
   t1.delta('Oké.');
   h.tick(1000); h.feed(1000); h.t.sweep();
@@ -317,6 +317,36 @@ function harness(language?: string, cfg: { idleTimeoutMs?: number; sessionMaxAud
   h.tick(6000); h.transport().ev.onClose('socket closed'); // old session → plain lazy reconnect
   h.tick(250); h.feed(250);
   assert.equal(h.transports.length, 4, 'a mature session reconnects on the next frame');
+  await h.t.dispose();
+}
+
+// ── 12: room tone the hangover lets through is not "unanswered speech" ───────
+{
+  const h = harness();
+  h.feed(100); await h.flushMicrotasks();
+  for (let i = 0; i < 30; i++) { h.tick(1000); h.feed(1000, 0.004); }   // 30 s of near-silence, no deltas
+  h.t.sweep();
+  assert.equal(h.transports.length, 1, 'silence never starves a session');
+  assert.ok(h.transport().audioBytes > 0, 'the silence was still sent');
+  await h.t.dispose();
+}
+
+// ── 13: a fresh session is never handed more than a few seconds at once ──────
+{
+  const h = harness();
+  h.feed(100); await h.flushMicrotasks();
+  // Five quick deaths drive the backoff to its 30 s cap …
+  for (let wait of [2000, 4000, 8000, 16000, 30000]) {
+    h.transport().ev.onClose('server error: busy');
+    h.tick(wait); h.feed(100); await h.flushMicrotasks();
+  }
+  const before = h.transports.length;
+  h.transport().ev.onClose('server error: busy');        // → next attempt in 30 s
+  for (let i = 0; i < 20; i++) { h.tick(1000); h.feed(1000); }   // 20 s of speech queued meanwhile
+  assert.equal(h.transports.length, before, 'still waiting');
+  h.tick(11000); h.feed(100); await h.flushMicrotasks();
+  assert.equal(h.transports.length, before + 1, 'reconnected after the wait');
+  assert.ok(h.transport().audioBytes <= 5 * 16000 * 2, `reconnect burst capped (${h.transport().audioBytes} bytes)`);
   await h.t.dispose();
 }
 

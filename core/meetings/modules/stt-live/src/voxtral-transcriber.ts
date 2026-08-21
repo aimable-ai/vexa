@@ -69,8 +69,14 @@ const SESSION_FORCE_EXTRA_SEC = 160;
  *  of loud speech decoded as pads, a fresh session transcribes the same bytes fine), so a
  *  starved session is recycled and the unanswered audio re-sent into the new one. */
 const STARVATION_WARN_SEC = 8;
-/** Unanswered audio kept for that re-send (bounded so a dead server can't grow it). */
-const STARVATION_REPLAY_MAX_SEC = 60;
+/** Most audio ever handed to a fresh session at once (re-sent backlog + frames queued while
+ *  reconnecting). audio.cpp's live ingest digests a backlog in one synchronous pass and a
+ *  pass of ≥10 s of silence / ≥20 s of speech wedges the session for good (measured
+ *  2026-08-21: no deltas, stops reading, slot held until idle timeout). */
+const BURST_MAX_SEC = 4;
+/** Frames quieter than this are room tone the gate's hangover lets through; the model rightly
+ *  decodes nothing for them, so they must not count as "unanswered" speech. */
+const SPEECH_PEAK = 0.02;
 /** Consecutive starved recycles with no delta in between before we stop re-sending audio
  *  (a server that is down, not stuck, must not be hammered with the same 30 s forever). */
 const STARVATION_MAX_RECYCLES = 3;
@@ -230,15 +236,17 @@ export class VoxtralTranscriber {
     this.lastAudioWallMs = wall;
     this.tailFlushed = false;
     this.sessionAudioSec += pcm.length / SAMPLE_RATE;
-    this.starvedAudioSec += pcm.length / SAMPLE_RATE;
+    const loud = peakOf(pcm) >= SPEECH_PEAK;
+    if (loud) this.starvedAudioSec += pcm.length / SAMPLE_RATE;
     const pcm16 = float32ToPcm16(pcm);
     this.repair?.remember(tsMs, pcm16);
     if (this.transport?.ready) {
       this.transport.sendAudio(pcm16);
       this.audioSinceCommit = true;
-      this.rememberUnanswered(pcm16, pcm.length / SAMPLE_RATE);
+      if (loud) this.rememberUnanswered(pcm16, pcm.length / SAMPLE_RATE);
     } else {
       this.pendingAudio.push(pcm16);
+      trimToSeconds(this.pendingAudio, BURST_MAX_SEC);
       if (!this.transport && wall >= this.reconnectNotBeforeMs) this.connect();
     }
   }
@@ -330,6 +338,7 @@ export class VoxtralTranscriber {
     this.transport = null;
     // Audio the dead session never answered goes first into the new one (after the primer).
     this.pendingAudio.unshift(...replay);
+    trimToSeconds(this.pendingAudio, BURST_MAX_SEC);
     // Reconnect eagerly so the primer locks the language before speech resumes.
     this.connect();
   }
@@ -337,7 +346,7 @@ export class VoxtralTranscriber {
   private rememberUnanswered(pcm16: Buffer, sec: number): void {
     this.starvedPcm.push(pcm16);
     this.starvedPcmSec += sec;
-    while (this.starvedPcmSec > STARVATION_REPLAY_MAX_SEC && this.starvedPcm.length > 1) {
+    while (this.starvedPcmSec > BURST_MAX_SEC && this.starvedPcm.length > 1) {
       const dropped = this.starvedPcm.shift()!;
       this.starvedPcmSec -= dropped.length / 2 / SAMPLE_RATE;
     }
@@ -554,6 +563,18 @@ export class VoxtralTranscriber {
       this.transport = null;
     }
   }
+}
+
+function peakOf(pcm: Float32Array): number {
+  let peak = 0;
+  for (let i = 0; i < pcm.length; i++) { const v = Math.abs(pcm[i]); if (v > peak) peak = v; }
+  return peak;
+}
+
+/** Drop the OLDEST buffers until at most `sec` seconds of s16le audio remain. */
+function trimToSeconds(buffers: Buffer[], sec: number): void {
+  let total = buffers.reduce((n, b) => n + b.length, 0) / 2 / SAMPLE_RATE;
+  while (total > sec && buffers.length > 1) total -= buffers.shift()!.length / 2 / SAMPLE_RATE;
 }
 
 function float32ToPcm16(audio: Float32Array): Buffer {
