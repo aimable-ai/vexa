@@ -38,11 +38,18 @@ function isKnownPhrase(lower: string, phrases: ReadonlySet<string>): boolean {
   return phrases.has(stripped) || phrases.has(stripped + '...') || phrases.has(stripped + '.');
 }
 
+/** The phrase lists were mined from whisper hallucinating on SILENCE and carry dotted
+ *  one-worders ("Yes.", "No.", "Bye."). Here the audio gate already vouched for speech, so a
+ *  one-word answer is real (meeting 21 lost "Yes." / "No." / "Bye." to the list); two-word
+ *  entries ("Ondertiteling ingeschakeld") are still the hallucinations they were mined as. */
+const PHRASE_MIN_WORDS = 2;
+
 export function isJunk(text: string, phrases?: ReadonlySet<string>): boolean {
   const t = text.trim();
   if (!t) return true;
+  const words = t.toLowerCase().split(/\s+/).filter(Boolean);
   if (isRepetitionLoop(t)) return true;
-  if (isPhraseLoop(t.toLowerCase().split(/\s+/).filter(Boolean))) return true;
-  if (phrases && isKnownPhrase(t.toLowerCase(), phrases)) return true;
+  if (isPhraseLoop(words)) return true;
+  if (phrases && words.length >= PHRASE_MIN_WORDS && isKnownPhrase(t.toLowerCase(), phrases)) return true;
   return false;
 }

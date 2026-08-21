@@ -18,4 +18,10 @@ assert.equal(isJunk('Bedankt voor het kijken', phrases), true, 'phrase listed WI
 assert.equal(isJunk('Thank you for watching...', phrases), true, 'trailing punctuation normalised');
 assert.equal(isJunk('Thank you for watching', undefined), false, 'no phrase set → no phrase drops');
 
+// one- and two-word answers are real speech on this path even when the list carries them
+const short = new Set(['yes.', 'no.', 'bye.', 'gracias.', 'ondertiteling ingeschakeld', 'bedankt voor het kijken.']);
+for (const t of ['Yes.', 'No.', 'Bye.', 'Gracias.']) assert.equal(isJunk(t, short), false, `"${t}" survives the phrase list`);
+assert.equal(isJunk('Ondertiteling ingeschakeld', short), true, 'two-word listed hallucination still dropped');
+assert.equal(isJunk('Bedankt voor het kijken.', short), true, 'multi-word listed phrase still dropped');
+
 console.log('junk-filter.test: OK');

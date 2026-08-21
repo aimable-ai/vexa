@@ -184,6 +184,37 @@ await streams2.dispose();
   await st.dispose();
 }
 
+// 7b: a LOST close must not hold the name forever — a holder that stopped reporting releases it.
+{
+  const st = new LiveSpeakerStreams(
+    { engine: 'voxtral', url: 'ws://mock' },
+    { publish: () => {}, publishPending: () => {}, clearPending: () => {}, rename: () => {} },
+  );
+  (st as any).ensure = async (ch: number) => {
+    const e = { feedAudio() {}, recordHint() {}, async dispose() {} };
+    (st as any).channels.set(ch, e); return e;
+  };
+  const nameOf = (csrc: number) => (st as any).csrcs.get(csrc)?.name;
+  let T = 6_000_000_000_000;
+  const glow = (ch: number, name: string, frames: number) => { for (let i = 0; i < frames; i++) st.feedAudio(ch, name, pcm(256), T + i * 256); };
+  st.recordTransport({ csrc: 111, active: true, tMs: T, channel: 0 });
+  glow(0, 'Bart Evers', 12);
+  assert.equal(nameOf(111), 'Bart Evers');
+  // 111's active:false is never delivered. 40 s later 333 shows up on ch1 under the same glow.
+  T += 40_000;
+  st.recordTransport({ csrc: 333, active: true, tMs: T, channel: 1 });
+  glow(1, 'Bart Evers', 12);
+  assert.equal(nameOf(333), 'Bart Evers', 'a holder that stopped reporting no longer blocks the name');
+  // …but a holder that keeps reporting (repeated active events) does.
+  st.recordTransport({ csrc: 333, active: false, tMs: T + 5_000, channel: 1 });
+  T += 40_000;
+  st.recordTransport({ csrc: 444, active: true, tMs: T, channel: 2 });
+  st.recordTransport({ csrc: 333, active: true, tMs: T, channel: 1 });   // 333 still audibly Bart
+  glow(2, 'Bart Evers', 12);
+  assert.equal(nameOf(444), undefined, 'an audible holder still keeps the name');
+  await st.dispose();
+}
+
 // 4: dispose drains and closes every channel transport
 await streams.dispose();
 assert.ok(transports.every((t) => t.closed), 'all channel transports closed');

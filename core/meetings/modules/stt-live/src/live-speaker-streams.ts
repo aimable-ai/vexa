@@ -68,6 +68,9 @@ interface CsrcState {
   support: Map<string, number>;
   /** Bound name once the evidence clears the bars. */
   name?: string;
+  /** Last transport event of any kind for this source — a lost `active:false` must not let an
+   *  open interval hold a name for the rest of the meeting. */
+  lastSeenMs: number;
   /** Accounting for the marker test: ms audible on some slot, and ms audible ALONE on its slot.
    *  Meet stamps a constant (42 so far) on whichever slot carries the dominant speaker — it is on
    *  exactly one slot at a time, for the whole meeting, and NEVER alone; a person is alone on a
@@ -154,6 +157,7 @@ export class LiveSpeakerStreams {
   recordTransport(ev: LiveTransportEvent): void {
     if (this.disposed || typeof ev.channel !== 'number') return;
     const st = this.csrcState(ev.csrc);
+    st.lastSeenMs = Math.max(st.lastSeenMs, ev.tMs);
     const list = st.onChannel.get(ev.channel) ?? [];
     st.onChannel.set(ev.channel, list);
     const open = list.length ? list[list.length - 1] : undefined;
@@ -189,7 +193,7 @@ export class LiveSpeakerStreams {
 
   private csrcState(csrc: number): CsrcState {
     let st = this.csrcs.get(csrc);
-    if (!st) { st = { onChannel: new Map(), support: new Map(), ambient: false, activeMs: 0, soloMs: 0, published: [] }; this.csrcs.set(csrc, st); }
+    if (!st) { st = { onChannel: new Map(), support: new Map(), ambient: false, activeMs: 0, soloMs: 0, published: [], lastSeenMs: 0 }; this.csrcs.set(csrc, st); }
     return st;
   }
 
@@ -241,12 +245,17 @@ export class LiveSpeakerStreams {
     for (const [ch, m] of byChannel) for (const [old, segs] of m) this.cb.rename(ch, old, st.name, segs);
   }
 
-  /** Another non-ambient source bound to this name and audible within NAME_HOLDER_QUIET_MS. */
+  /** Another non-ambient source bound to this name and audible within NAME_HOLDER_QUIET_MS.
+   *  An interval still open counts only while the source keeps reporting (Meet repeats the
+   *  active event every few hundred ms) — a lost close must not hold the name forever. */
   private heldBy(name: string, except: number, nowMs: number): number | undefined {
     for (const [c, st] of this.csrcs) {
       if (c === except || st.ambient || st.name !== name) continue;
       for (const ivs of st.onChannel.values()) {
-        for (const iv of ivs) if (iv.end === null || nowMs - iv.end < NAME_HOLDER_QUIET_MS) return c;
+        for (const iv of ivs) {
+          const lastAudible = iv.end === null ? st.lastSeenMs : iv.end;
+          if (nowMs - lastAudible < NAME_HOLDER_QUIET_MS) return c;
+        }
       }
     }
     return undefined;
