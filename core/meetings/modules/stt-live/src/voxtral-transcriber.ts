@@ -70,10 +70,15 @@ const SESSION_FORCE_EXTRA_SEC = 160;
  *  starved session is recycled and the unanswered audio re-sent into the new one. */
 const STARVATION_WARN_SEC = 8;
 /** Unanswered audio kept for that re-send (bounded so a dead server can't grow it). */
-const STARVATION_REPLAY_MAX_SEC = 30;
+const STARVATION_REPLAY_MAX_SEC = 60;
 /** Consecutive starved recycles with no delta in between before we stop re-sending audio
  *  (a server that is down, not stuck, must not be hammered with the same 30 s forever). */
 const STARVATION_MAX_RECYCLES = 3;
+/** A session that closes this soon after opening did not work (server busy, proxy reset,
+ *  bad URL…); reopening on the next frame would hammer the server every ~250 ms. */
+const QUICK_CLOSE_MS = 5_000;
+const RECONNECT_BACKOFF_MIN_MS = 2_000;
+const RECONNECT_BACKOFF_MAX_MS = 30_000;
 /** Unresolved (provisionally-named) turns kept for late hint renames. */
 const MAX_UNRESOLVED = 100;
 /** dispose(): wait this long for in-flight deltas after the final flush. */
@@ -177,6 +182,9 @@ export class VoxtralTranscriber {
   private starvedPcm: Buffer[] = [];
   private starvedPcmSec = 0;
   private starvedRecycles = 0;
+  private sessionOpenedWallMs = 0;
+  private reconnectBackoffMs = 0;
+  private reconnectNotBeforeMs = 0;
   private seq = 0;
   private turnCounter = 0;
   private openClusterId = '';
@@ -231,7 +239,7 @@ export class VoxtralTranscriber {
       this.rememberUnanswered(pcm16, pcm.length / SAMPLE_RATE);
     } else {
       this.pendingAudio.push(pcm16);
-      if (!this.transport) this.connect();
+      if (!this.transport && wall >= this.reconnectNotBeforeMs) this.connect();
     }
   }
 
@@ -269,6 +277,7 @@ export class VoxtralTranscriber {
 
   private connect(): void {
     this.sessionAudioSec = 0;
+    this.sessionOpenedWallMs = this.now();
     const factory = this.cfg.transportFactory ?? openLiveTransport;
     const t = factory(
       { url: this.cfg.url, apiToken: this.cfg.apiToken, model: this.cfg.model },
@@ -299,8 +308,14 @@ export class VoxtralTranscriber {
         onDelta: (text) => { if (this.transport === t) this.handleDelta(text); },
         onClose: (reason) => {
           if (this.transport !== t) return;
-          this.cb.log?.(`[voxtral] transport closed: ${reason} (lazy reconnect on next audio)`);
           this.transport = null;
+          if (this.now() - this.sessionOpenedWallMs < QUICK_CLOSE_MS) {
+            this.reconnectBackoffMs = Math.min(Math.max(RECONNECT_BACKOFF_MIN_MS, this.reconnectBackoffMs * 2), RECONNECT_BACKOFF_MAX_MS);
+            this.reconnectNotBeforeMs = this.now() + this.reconnectBackoffMs;
+            this.cb.log?.(`[voxtral] transport closed: ${reason} (died within ${QUICK_CLOSE_MS / 1000}s — next attempt in ${this.reconnectBackoffMs / 1000}s)`);
+            return;
+          }
+          this.cb.log?.(`[voxtral] transport closed: ${reason} (lazy reconnect on next audio)`);
         },
         log: this.cb.log,
       },
@@ -311,7 +326,7 @@ export class VoxtralTranscriber {
   private recycleSession(reason: string, replay: Buffer[] = []): void {
     this.cb.log?.(`[voxtral] session recycle (${reason}, ${Math.round(this.sessionAudioSec)}s audio)`);
     this.finalizeSegment('recycle');
-    this.transport?.close();
+    if (reason === 'starved') this.transport?.abort(); else this.transport?.close();
     this.transport = null;
     // Audio the dead session never answered goes first into the new one (after the primer).
     this.pendingAudio.unshift(...replay);
@@ -343,6 +358,7 @@ export class VoxtralTranscriber {
     this.starvedAudioSec = 0;
     this.starvedWarned = false;
     this.starvedRecycles = 0;
+    this.reconnectBackoffMs = 0;
     this.answeredWallMs = this.now();
     this.clearUnanswered();
     if (this.primer.consume(delta)) return;

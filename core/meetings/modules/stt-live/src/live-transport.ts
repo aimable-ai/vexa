@@ -43,7 +43,24 @@ export interface LiveTransport {
   sendAudio(pcm16: Buffer): void;
   /** Ask the server to transcribe everything appended so far (WS only; no-op on HTTP-live). */
   commit(final?: boolean): void;
+  /** Finish gracefully: end the request body, let in-flight deltas arrive. */
   close(): void;
+  /** Tear the connection down now — a stalled session must not keep its server slot. */
+  abort(): void;
+}
+
+/** One line of the HTTP-live response → server error message, or null. audio.cpp reports
+ *  "busy" (no free session slot) as an SSE error event inside a 200 response. */
+export function parseLiveError(line: string): string | null {
+  let payload = line.trim();
+  if (payload.startsWith('data:')) payload = payload.slice(5).trim();
+  if (!payload.startsWith('{')) return null;
+  try {
+    const obj = JSON.parse(payload) as { type?: unknown; error?: unknown };
+    if (obj.type !== 'error' && obj.error === undefined) return null;
+    const err = obj.error as { message?: unknown } | string | undefined;
+    return typeof err === 'string' ? err : typeof err?.message === 'string' ? err.message : payload;
+  } catch { return null; }
 }
 
 /** One line of the HTTP-live response → delta text, or null for noise. */
@@ -106,6 +123,8 @@ class WsTransport implements LiveTransport {
       : { type: 'input_audio_buffer.commit' }));
   }
 
+  abort(): void { this.close(); }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -167,8 +186,15 @@ class HttpLiveTransport implements LiveTransport {
         buf += chunk;
         let nl;
         while ((nl = buf.indexOf('\n')) >= 0) {
-          const delta = parseLiveDelta(buf.slice(0, nl).trim());
+          const line = buf.slice(0, nl).trim();
           buf = buf.slice(nl + 1);
+          const error = parseLiveError(line);
+          if (error) {
+            this.end(`server error: ${error}`);
+            req.destroy();
+            return;
+          }
+          const delta = parseLiveDelta(line);
           if (delta) this.ev.onDelta(delta);
         }
       });
@@ -188,6 +214,13 @@ class HttpLiveTransport implements LiveTransport {
     if (this.closed) return;
     this.closed = true;
     try { this.req.end(); } catch { /* already down */ }
+  }
+
+  abort(): void {
+    if (this.closed) return;
+    this.closed = true;
+    // end() would queue the terminator behind unsent audio a stalled server never reads.
+    this.req.destroy();
   }
 
   private end(reason: string): void {

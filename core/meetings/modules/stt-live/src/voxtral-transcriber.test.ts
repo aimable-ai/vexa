@@ -32,7 +32,9 @@ class MockTransport implements LiveTransport {
     if (isAllZero(pcm16)) this.silenceSends++;
   }
   commit(): void { this.commits++; }
+  aborted = false;
   close(): void { this.closed = true; }
+  abort(): void { this.closed = true; this.aborted = true; }
   delta(text: string): void { this.ev.onDelta(text); }
 }
 const isAllZero = (b: Buffer): boolean => b.every((x) => x === 0);
@@ -293,6 +295,28 @@ function harness(language?: string, cfg: { idleTimeoutMs?: number; sessionMaxAud
     h.t.sweep(); await h.flushMicrotasks();
   }
   assert.equal(h.transports.length, 4, 'three starved recycles, then the session is left alone');
+  assert.ok(h.transports[0].aborted, 'a starved session is torn down, not ended (its slot must not linger)');
+  await h.t.dispose();
+}
+
+// ── 11: a session that dies right after opening is retried with backoff, not per frame ──
+{
+  const h = harness();
+  h.feed(250); await h.flushMicrotasks();
+  h.transport().ev.onClose('server error: busy');        // died at age 0
+  h.tick(250); h.feed(250);
+  assert.equal(h.transports.length, 1, 'no reconnect on the very next frame');
+  h.tick(2000); h.feed(250);
+  assert.equal(h.transports.length, 2, 'reconnect after the 2 s wait'); await h.flushMicrotasks();
+  h.transport().ev.onClose('response ended');              // died again → 4 s
+  h.tick(2500); h.feed(250);
+  assert.equal(h.transports.length, 2, 'backoff doubled');
+  h.tick(2000); h.feed(250); await h.flushMicrotasks();
+  assert.equal(h.transports.length, 3, 'reconnect after 4 s');
+  h.transport().delta('hallo');                            // a working session resets the backoff
+  h.tick(6000); h.transport().ev.onClose('socket closed'); // old session → plain lazy reconnect
+  h.tick(250); h.feed(250);
+  assert.equal(h.transports.length, 4, 'a mature session reconnects on the next frame');
   await h.t.dispose();
 }
 

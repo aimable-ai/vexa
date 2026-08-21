@@ -17,6 +17,7 @@ class MockTransport implements LiveTransport {
   sendAudio(): void { /* counted elsewhere */ }
   commit(): void { /* no-op */ }
   close(): void { this.closed = true; }
+  abort(): void { this.closed = true; }
 }
 
 let clock = 3_000_000_000_000;
