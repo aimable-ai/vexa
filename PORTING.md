@@ -533,3 +533,11 @@ Upstream knobs relevant to Teams tuning: `VEXA_HINT_MIN_COVERAGE` 0.35,
   audible within `NAME_HOLDER_QUIET_MS` 30 s (a quiet holder releases it — rejoin). Offline binder replay of the
   meeting-16 csrc+glow sidecars (scratch `binder-replay.ts`, no engine) reproduces the baseline log exactly and
   with the fix binds each person once, never flips, and the marker (42) never takes a name. Not yet deployed.
+- 2026-08-21: meeting 16's "starved" cascade reproduced by tape replay = audio.cpp session-slot exhaustion
+  (4 slots, silent 300 s queue, SSE busy error the bot dropped, 250 ms reconnect storm; orphaned sessions
+  hold a slot until the 600 s idle timeout — accepted). pii `server.json`: `max_concurrent_streams` 8,
+  `busy_timeout_ms` 2000, `total_timeout_ms` 0; voxtral-proxy read/send timeout 14400 s (both restarted,
+  backups `*.bak-20260821`). stt-live 880e0048: busy/error events close the session with the message logged,
+  any session dying <5 s after open backs off 2→30 s, starved recycles `abort()` (destroy) the old request,
+  re-send buffer 60 s. + 32c96ed4 sticky/exclusive name binding. **Deployed as `vexa/vexa-bot:aim1467-13`**
+  (bot only; runtime/meeting-api stay -12), pinned in `docker-compose.override.yml`. Not yet replayed/stress-tested.
