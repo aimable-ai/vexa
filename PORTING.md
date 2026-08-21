@@ -541,3 +541,8 @@ Upstream knobs relevant to Teams tuning: `VEXA_HINT_MIN_COVERAGE` 0.35,
   any session dying <5 s after open backs off 2→30 s, starved recycles `abort()` (destroy) the old request,
   re-send buffer 60 s. + 32c96ed4 sticky/exclusive name binding. **Deployed as `vexa/vexa-bot:aim1467-13`**
   (bot only; runtime/meeting-api stay -12), pinned in `docker-compose.override.yml`. Not yet replayed/stress-tested.
+- 2026-08-21 (later): meetings 19/20 on aim1467-13 cycled in 10-min holes — root cause = audio.cpp wedges a live session
+  handed a burst (≥10 s near-silence / ≥20 s speech in one pass; measured direct + via proxy, no upstream issue) and the
+  bot's starvation detector fired on room tone the hangover gate passes, then re-sent the backlog as exactly such a burst.
+  stt-live 3388d133: starvation counts frames with peak ≥ 0.02 only; re-send + reconnect backlog capped at 4 s.
+  **Deployed as `vexa/vexa-bot:aim1467-14`**; audiocpp-server restarted clean (0 slots held) 11:01Z.
