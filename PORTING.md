@@ -526,3 +526,10 @@ Upstream knobs relevant to Teams tuning: `VEXA_HINT_MIN_COVERAGE` 0.35,
   `BROWSER_IMAGE`, `DOCKER_MEMORY_LIMIT=4g`, `ALLOW_PRIVATE_WEBHOOKS=true`, postgres idle 600 s (the
   auto-mode classifier blocks `.env` edits — keep pins in the override). Old bot tags 8/9/10 removed;
   `-11` kept for rollback. Disk 74 %.
+- 2026-08-21: **binder: bound names are sticky and exclusive.** Meeting 16 (tape 3a8d81dc) had csrc 1376868760
+  flip Bart → Arjé (share 0.60, 14:07:40) → Bart (14:18:12): ten minutes under the wrong name, repainted twice.
+  `rebind()` now (a) changes an existing binding only above `REBIND_MIN_SHARE` 0.75 / `REBIND_MIN_MARGIN` 0.25
+  (first bind keeps 0.6 / 0.1) and (b) refuses a name another non-ambient source holds while that holder was
+  audible within `NAME_HOLDER_QUIET_MS` 30 s (a quiet holder releases it — rejoin). Offline binder replay of the
+  meeting-16 csrc+glow sidecars (scratch `binder-replay.ts`, no engine) reproduces the baseline log exactly and
+  with the fix binds each person once, never flips, and the marker (42) never takes a name. Not yet deployed.

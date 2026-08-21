@@ -147,6 +147,42 @@ await streams2.dispose();
   await st.dispose();
 }
 
+// 7: a bound name is sticky (needs clearly stronger evidence to change) and exclusive (a
+//    source cannot take a name another source audibly holds; it may after the holder went quiet).
+{
+  const st = new LiveSpeakerStreams(
+    { engine: 'voxtral', url: 'ws://mock' },
+    { publish: () => {}, publishPending: () => {}, clearPending: () => {}, rename: () => {} },
+  );
+  (st as any).ensure = async (ch: number) => {
+    const e = { feedAudio() {}, recordHint() {}, async dispose() {} };
+    (st as any).channels.set(ch, e); return e;
+  };
+  const nameOf = (csrc: number) => (st as any).csrcs.get(csrc)?.name;
+  const glow = (ch: number, name: string, frames: number) => { for (let i = 0; i < frames; i++) st.feedAudio(ch, name, pcm(256), T + i * 256); };
+  let T = 5_000_000_000_000;
+  st.recordTransport({ csrc: 111, active: true, tMs: T, channel: 0 });
+  glow(0, 'Ludger Visser', 12);
+  assert.equal(nameOf(111), 'Ludger Visser');
+  // 18 frames of a rival glow: share 0.60 / margin 0.20 clears the FIRST-bind bar, not the rebind bar.
+  glow(0, 'Arjé Cahn', 18);
+  assert.equal(nameOf(111), 'Ludger Visser', 'a marginal rival does not overturn a bound name');
+  glow(0, 'Arjé Cahn', 58);
+  assert.equal(nameOf(111), 'Arjé Cahn', 'overwhelming evidence still corrects a bound name');
+  // Exclusive: 333 on ch1 hears "Arjé Cahn" glow while 111 (bound to it) is still audible.
+  st.recordTransport({ csrc: 333, active: true, tMs: T, channel: 1 });
+  glow(1, 'Arjé Cahn', 12);
+  assert.equal(nameOf(333), undefined, 'a name audibly held by another source cannot be taken');
+  // Holder goes quiet for 30 s → the name may pass to the new source (rejoin case).
+  st.recordTransport({ csrc: 111, active: false, tMs: T + 20_000, channel: 0 });
+  T += 51_000;
+  st.recordTransport({ csrc: 333, active: false, tMs: T - 1, channel: 1 });
+  st.recordTransport({ csrc: 333, active: true, tMs: T, channel: 1 });
+  glow(1, 'Arjé Cahn', 12);
+  assert.equal(nameOf(333), 'Arjé Cahn', 'a quiet holder releases the name');
+  await st.dispose();
+}
+
 // 4: dispose drains and closes every channel transport
 await streams.dispose();
 assert.ok(transports.every((t) => t.closed), 'all channel transports closed');

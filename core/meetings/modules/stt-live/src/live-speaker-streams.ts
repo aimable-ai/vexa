@@ -88,6 +88,9 @@ const AMBIENT_MAX_SOLO_SHARE = 0.03;
 const CSRC_MIN_SUPPORT_MS = 1500;
 const CSRC_MIN_SHARE = 0.6;
 const CSRC_MIN_MARGIN = 0.1;
+const REBIND_MIN_SHARE = 0.75;
+const REBIND_MIN_MARGIN = 0.25;
+const NAME_HOLDER_QUIET_MS = 30_000;
 /** A source must cover this much of a segment (fraction, or absolute ms) to own it. */
 const CSRC_MIN_COVER_FRACTION = 0.3;
 const CSRC_MIN_COVER_MS = 300;
@@ -207,11 +210,11 @@ export class LiveSpeakerStreams {
       if (last.end !== null && tsMs > last.end) continue;
       if (tsMs < last.start) continue;
       st.support.set(name, (st.support.get(name) ?? 0) + frameMs);
-      this.rebind(csrc, st);
+      this.rebind(csrc, st, tsMs);
     }
   }
 
-  private rebind(csrc: number, st: CsrcState): void {
+  private rebind(csrc: number, st: CsrcState, nowMs: number): void {
     let total = 0; let best: [string, number] | undefined; let second = 0;
     for (const [n, ms] of st.support) {
       total += ms;
@@ -219,8 +222,11 @@ export class LiveSpeakerStreams {
       else if (ms > second) second = ms;
     }
     if (!best || best[1] < CSRC_MIN_SUPPORT_MS) return;
-    if (best[1] / total < CSRC_MIN_SHARE || (best[1] - second) / total < CSRC_MIN_MARGIN) return;
+    const share = best[1] / total, margin = (best[1] - second) / total;
+    if (share < CSRC_MIN_SHARE || margin < CSRC_MIN_MARGIN) return;
     if (st.name === best[0]) return;
+    if (st.name && (share < REBIND_MIN_SHARE || margin < REBIND_MIN_MARGIN)) return;
+    if (this.heldBy(best[0], csrc, nowMs) !== undefined) return;
     const prev = st.name;
     st.name = best[0];
     this.cb.log?.(`[csrc] ${csrc} → "${best[0]}" (${Math.round(best[1])} ms, share ${(best[1] / total).toFixed(2)}${prev ? `, was "${prev}"` : ''})`);
@@ -233,6 +239,17 @@ export class LiveSpeakerStreams {
       row.speaker = st.name;
     }
     for (const [ch, m] of byChannel) for (const [old, segs] of m) this.cb.rename(ch, old, st.name, segs);
+  }
+
+  /** Another non-ambient source bound to this name and audible within NAME_HOLDER_QUIET_MS. */
+  private heldBy(name: string, except: number, nowMs: number): number | undefined {
+    for (const [c, st] of this.csrcs) {
+      if (c === except || st.ambient || st.name !== name) continue;
+      for (const ivs of st.onChannel.values()) {
+        for (const iv of ivs) if (iv.end === null || nowMs - iv.end < NAME_HOLDER_QUIET_MS) return c;
+      }
+    }
+    return undefined;
   }
 
   /** The source that owns a segment on a channel: the non-ambient CSRC covering most of its window. */
