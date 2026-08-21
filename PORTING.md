@@ -550,3 +550,6 @@ Upstream knobs relevant to Teams tuning: `VEXA_HINT_MIN_COVERAGE` 0.35,
   deployed. Meeting-21 tape replay: 3 repairs, 0 starved/busy, no duplicate. Text-based bleed suppression evaluated on the
   tape and rejected (ghost turns are garbled real overlap, not copies). Platform correction prompt tightened on
   ludgervisser/aim-1377-voxtral-mini (94a2ce64) — note that pass is not on `test` yet.
+- 2026-08-21 (review follow-up): phrase list needs ≥2 words on the live lane (one-word answers are real) and
+  `heldBy` counts an open interval as audible only within 30 s of the source's last transport event (2375a608) →
+  **`vexa/vexa-bot:aim1467-16`** deployed.
