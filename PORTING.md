@@ -546,3 +546,7 @@ Upstream knobs relevant to Teams tuning: `VEXA_HINT_MIN_COVERAGE` 0.35,
   bot's starvation detector fired on room tone the hangover gate passes, then re-sent the backlog as exactly such a burst.
   stt-live 3388d133: starvation counts frames with peak ≥ 0.02 only; re-send + reconnect backlog capped at 4 s.
   **Deployed as `vexa/vexa-bot:aim1467-14`**; audiocpp-server restarted clean (0 slots held) 11:01Z.
+- 2026-08-21 (eve): language repair = explicit language only + no tail padding (eb44c92e) → **`vexa/vexa-bot:aim1467-15`**
+  deployed. Meeting-21 tape replay: 3 repairs, 0 starved/busy, no duplicate. Text-based bleed suppression evaluated on the
+  tape and rejected (ghost turns are garbled real overlap, not copies). Platform correction prompt tightened on
+  ludgervisser/aim-1377-voxtral-mini (94a2ce64) — note that pass is not on `test` yet.
