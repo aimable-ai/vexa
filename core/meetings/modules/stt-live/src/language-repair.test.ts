@@ -31,7 +31,7 @@ assert.equal(r.observe('Yeah, the orchestra is clear, but for men it is difficul
 const fixed = await r.repair(1_004_000, 1_007_000);
 assert.equal(fixed, 'De orchestrator is klaar, maar voor mensen is dat lastig.');
 assert.equal(calls[0].lang, 'nl', 'Whisper called with the session language pinned');
-assert.ok(calls[0].bytes > 3.6 * 16000 * 2, `window carries the segment + padding (${calls[0].bytes} bytes)`);
+assert.ok(calls[0].bytes >= 3.2 * 16000 * 2 && calls[0].bytes <= 3.6 * 16000 * 2, `window = lead-in + segment, no tail padding (${calls[0].bytes} bytes)`);
 
 reply = async () => new Response('boom', { status: 500 });
 assert.equal(await r.repair(1_004_000, 1_007_000), null, 'HTTP error keeps the original');
@@ -40,10 +40,11 @@ assert.equal(await r.repair(1_004_000, 1_007_000), null, 'timeout keeps the orig
 reply = async () => new Response(JSON.stringify({ text: 'Yeah the orchestra is clear but for men it is difficult' }));
 assert.equal(await r.repair(1_004_000, 1_007_000), null, 'Whisper answering in the wrong language keeps the original');
 
+// No explicit language (Multilanguage) → never locks, never repairs: a real switch to English must survive.
 const auto = new LanguageRepair({ url: 'http://lb', fetchImpl });
-assert.equal(auto.language, null);
 for (let i = 0; i < 6; i++) auto.observe('Ja, dat is wel een goed idee, maar dan moet je het even in de agent zetten.');
-assert.equal(auto.language, 'nl', 'auto-locked on Dutch majority');
-assert.equal(auto.observe('So go clicker. Yeah. Will you lead the full click?'), true, 'drift detected after auto-lock');
+assert.equal(auto.language, null, 'no auto-lock');
+assert.equal(auto.observe('So go clicker. Yeah. Will you lead the full click?'), false, 'no drift without a configured language');
+assert.equal(await auto.repair(1_004_000, 1_007_000), null, 'no repair without a configured language');
 
 console.log('language-repair.test: OK');

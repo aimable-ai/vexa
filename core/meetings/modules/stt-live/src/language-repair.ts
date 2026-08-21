@@ -5,16 +5,18 @@
  * the segment's own audio through a Whisper endpoint that DOES take `language`, replacing
  * the text. Fail-open: any error/timeout keeps Voxtral's text.
  *
- * Session language = the configured one, else auto-locked from the first ~40 confirmed
- * words (majority nl/en/de). Only the flagged ~1% of segments pay the extra round-trip.
+ * Session language = the configured one ONLY. A meeting without an explicit language
+ * ("Multilanguage") gets no repair: auto-locking on the first words would later "repair"
+ * a genuine switch to English into Dutch nonsense. Only flagged segments pay the round-trip.
  */
 export type RepairLanguage = 'nl' | 'en' | 'de';
 
 const SAMPLE_RATE = 16000;
 const DEFAULT_TIMEOUT_MS = 2500;
 const DEFAULT_BUFFER_SEC = 60;
-const PAD_MS = 300;
-const LOCK_MIN_WORDS = 40;
+/** Lead-in before the segment so Whisper hears the word onset. No tail padding: the next
+ *  segment's first words would come back too and be published twice (meeting 21). */
+const LEAD_MS = 300;
 
 const LANGS = ['nl', 'en', 'de'] as const;
 const WORDS: Record<RepairLanguage, Set<string>> = {
@@ -57,8 +59,7 @@ export function isLanguageDrift(text: string, session: RepairLanguage): boolean 
 export class LanguageRepair {
   private ring: Array<{ tsMs: number; pcm16: Buffer }> = [];
   private ringMs = 0;
-  private locked: RepairLanguage | null;
-  private tally = { nl: 0, en: 0, de: 0, words: 0 };
+  private readonly locked: RepairLanguage | null;
   private readonly timeoutMs: number;
   private readonly bufferMs: number;
   private readonly fetchImpl: typeof fetch;
@@ -80,25 +81,15 @@ export class LanguageRepair {
     while (this.ring.length && this.ringMs - this.ring[0].tsMs > this.bufferMs) this.ring.shift();
   }
 
-  /** Confirmed text: locks the session language when none was configured; returns whether it drifted. */
+  /** Confirmed text → did it drift out of the configured language? (never, without one) */
   observe(text: string): boolean {
-    if (!this.locked) {
-      const s = languageShares(text);
-      this.tally.words += s.words;
-      for (const l of LANGS) this.tally[l] += s[l] * s.words;
-      if (this.tally.words >= LOCK_MIN_WORDS) {
-        const best = [...LANGS].sort((a, b) => this.tally[b] - this.tally[a])[0];
-        if (this.tally[best] / this.tally.words >= 0.12) this.locked = best;
-      }
-      return false;
-    }
-    return isLanguageDrift(text, this.locked);
+    return this.locked ? isLanguageDrift(text, this.locked) : false;
   }
 
-  /** Re-transcribe [startMs, endMs] (padded) via the Whisper endpoint; null ⇒ keep the original. */
+  /** Re-transcribe [startMs − lead-in, endMs] via the Whisper endpoint; null ⇒ keep the original. */
   async repair(startMs: number, endMs: number): Promise<string | null> {
     if (!this.locked) return null;
-    const a = startMs - PAD_MS, b = endMs + PAD_MS;
+    const a = startMs - LEAD_MS, b = endMs;
     const parts = this.ring.filter((f) => f.tsMs >= a - 260 && f.tsMs <= b).map((f) => f.pcm16);
     if (!parts.length) return null;
     const pcm = Buffer.concat(parts);
