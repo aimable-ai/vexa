@@ -1,5 +1,5 @@
 import { log } from './log.js';
-import { isLowConfidenceSegment } from './confidence.js';
+import { isLowConfidenceSegment, STRICT_GATES } from './confidence.js';
 
 export interface TranscriptionWord {
   word: string;
@@ -93,6 +93,8 @@ function classifyHttp(status: number, detail?: string): TranscriptionError {
  * and returns transcription results.
  */
 export class TranscriptionClient {
+  private langTally: Record<string, number> = {};
+  private autoLock: string | undefined;
   private serviceUrl: string;
   private apiToken: string | undefined;
   private maxRetries: number;
@@ -272,6 +274,35 @@ export class TranscriptionClient {
       // Drop low-confidence (hallucinated / faint-bleed) segments at the source and
       // rebuild the text from what survives, so phantoms never reach the pipeline.
       // If the model returned no segments we can't score, so keep its text as-is.
+      // Strict gates (0.10 parity): an auto-detected language the model itself doubts means the
+      // window was decoded into a guess — unrecoverable text, drop the whole window.
+      const langProb = Number(data.language_probability ?? 0);
+      if (STRICT_GATES && !language && langProb > 0 && langProb < 0.3) {
+        log(`[STT] dropped window: language ${data.language} prob=${langProb.toFixed(2)} < 0.3`);
+        return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: data.duration || 0, segments: [] };
+      }
+      // Language lock (WHISPER_LANG_LOCK=auto (default) | <code> | off): a SHORT window decoded in another language than
+      // the session's is a mis-detection ("Tá bom", "C'est lui"), not code-switching — drop it. Long windows
+      // in another language are kept (real switches are long). auto = lock on the majority of the first 40 words.
+      const lockCfg = (process.env.WHISPER_LANG_LOCK || 'auto').toLowerCase();
+      if (lockCfg && lockCfg !== 'off') {
+        const detected = String(data.language || '').toLowerCase();
+        const nWords = String(data.text || '').split(/\s+/).filter(Boolean).length;
+        let lock = language ? language.toLowerCase() : (lockCfg === 'auto' ? this.autoLock : lockCfg);
+        if (!lock && lockCfg === 'auto' && detected) {
+          this.langTally[detected] = (this.langTally[detected] || 0) + nWords;
+          const total = Object.values(this.langTally).reduce((a, b) => a + b, 0);
+          if (total >= 40) {
+            this.autoLock = Object.entries(this.langTally).sort((a, b) => b[1] - a[1])[0][0];
+            log(`[STT] language auto-locked to ${this.autoLock} after ${total} words`);
+          }
+        }
+        const dur = Number(data.duration || 0);
+        if (lock && detected && detected !== lock && dur < (Number(process.env.WHISPER_LANG_LOCK_MAX_SEC) || 4)) {
+          log(`[STT] dropped window: language ${detected} != lock ${lock} on a ${dur.toFixed(1)}s window`);
+          return { text: '', language: detected, language_probability: langProb, duration: dur, segments: [] };
+        }
+      }
       const segments = allSegments.filter((s: any) => !isLowConfidenceSegment(s));
       const text = allSegments.length
         ? segments.map((s: any) => (s.text || '').trim()).filter(Boolean).join(' ')

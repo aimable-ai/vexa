@@ -4,12 +4,14 @@
  * transcription LB — the Voxtral replay's twin (modules/stt-live/src/replay-captured.ts).
  *
  *   tsx src/replay-captured-whisper.ts <captured.jsonl> <out.jsonl>
- * Env: WHISPER_URL (default pii LB), WHISPER_TOKEN, LANGUAGE (unset = auto), START/END, SPEED
+ * Env: WHISPER_URL (default pii LB), WHISPER_TOKEN, LANGUAGE (unset = auto), START/END, SPEED,
+ *      BOT_SPEAKER_* (buffer tuning), BOT_GMEET_ONSET_GAP_MS, WHISPER_GATES=strict — same knobs as the bot
  */
 import * as fs from 'node:fs';
 import * as readline from 'node:readline';
 import { createGmeetPipeline } from '@vexa/gmeet-pipeline';
 import { TranscriptionClient } from '@vexa/transcribe-whisper';
+import { speakerStreamConfigFromEnv } from './config.js';
 
 interface Frame { ts: number; speakerIndex: number; speakerName?: string; pcm: Float32Array }
 async function load(path: string, start: number, end: number): Promise<Frame[]> {
@@ -40,8 +42,13 @@ async function main(): Promise<void> {
   const w = (o: object) => out.write(JSON.stringify({ wall: Date.now(), ...o }) + '\n');
   const client = new TranscriptionClient({ serviceUrl: process.env.WHISPER_URL || 'http://pii.aimable.ai:8083', apiToken: process.env.WHISPER_TOKEN });
   let calls = 0, callMs = 0;
+  const config = speakerStreamConfigFromEnv();
+  const onsetGapMs = Number(process.env.BOT_GMEET_ONSET_GAP_MS) > 0 ? Number(process.env.BOT_GMEET_ONSET_GAP_MS) : undefined;
+  console.error(`[replay-whisper] config=${JSON.stringify(config ?? 'defaults')} onsetGapMs=${onsetGapMs ?? 1000} gates=${process.env.WHISPER_GATES || 'strict'} lock=${process.env.WHISPER_LANG_LOCK || 'auto'}`);
   const pipe = createGmeetPipeline({
-    transcribe: async (pcm, prompt) => { const t = Date.now(); calls++; try { return await client.transcribe(pcm, language, prompt); } finally { callMs += Date.now() - t; } },
+    config, onsetGapMs,
+    // BIAS_PROMPT reproduces the bot's vocabulary bias (invocation.initialPrompt): bias leads, continuity follows.
+    transcribe: async (pcm, prompt) => { const t = Date.now(); calls++; try { return await client.transcribe(pcm, language, [process.env.BIAS_PROMPT, prompt].filter(Boolean).join(' ') || undefined); } finally { callMs += Date.now() - t; } },
     sink: {
       segment: (s) => w({ ev: 'confirmed', ch: Number(String(s.speaker_key).split(':')[0]?.replace(/\D/g, '')) || 0, speaker: s.speaker, completed: true, text: s.text, startMs: s.start * 1000, endMs: s.end * 1000, id: s.segment_id, lang: s.language }),
       draft: (s) => w({ ev: 'pending', speaker: s.speaker, text: s.text, startMs: s.start * 1000, endMs: s.end * 1000, id: s.segment_id }),

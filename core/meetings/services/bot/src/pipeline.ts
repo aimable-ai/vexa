@@ -295,7 +295,10 @@ function createGmeetBotPipeline(
   config?: SpeakerStreamManagerConfig,
   onError?: (e: unknown) => void,
 ): BotPipeline {
-  const lane = createGmeetPipeline({ transcribe, sink: laneSink(sink.publish, onError), config, onError });
+  // BOT_GMEET_ONSET_GAP_MS: silence gap that closes a channel turn (default 1000). Wider gaps hand
+  // Whisper longer windows instead of sub-2 s remnants.
+  const onsetGapMs = Number(process.env.BOT_GMEET_ONSET_GAP_MS) > 0 ? Number(process.env.BOT_GMEET_ONSET_GAP_MS) : undefined;
+  const lane = createGmeetPipeline({ transcribe, sink: laneSink(sink.publish, onError), config, onsetGapMs, onError });
   return {
     async start() { /* lane is lazy — begins on the first fed frame */ },
     async stop() { await lane.dispose(); },
