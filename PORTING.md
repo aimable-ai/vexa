@@ -553,3 +553,10 @@ Upstream knobs relevant to Teams tuning: `VEXA_HINT_MIN_COVERAGE` 0.35,
 - 2026-08-21 (review follow-up): phrase list needs ≥2 words on the live lane (one-word answers are real) and
   `heldBy` counts an open interval as audible only within 30 s of the source's last transport event (2375a608) →
   **`vexa/vexa-bot:aim1467-16`** deployed.
+- 2026-08-25: Whisper-lane hallucinations (Arjé, reson8 space with no key → Whisper fallback, 26 % junk segments).
+  Replay A/B on captured-signal tapes vs batch Whisper: 0.10 cadence (1.2/1.2/3 s) is WORSE (WER 0.301→0.361), 2.5 s
+  onset gap no gain; strict 0.10-era confidence gates + session language lock (drop <4 s windows in another language
+  than the session's) cut junk 25 %→8 % (m21, Multilanguage) and 19 %→8 % (m22, nl) at flat WER. ab754e73 makes both
+  the default (`WHISPER_GATES=loose`, `WHISPER_LANG_LOCK=off|<code>` revert; `BOT_GMEET_ONSET_GAP_MS` knob) and gives
+  `replay-captured-whisper.ts` the same knobs + `BIAS_PROMPT`. **Deployed as `vexa/vexa-bot:aim1467-17`** (bot only;
+  old tags 11–14 removed, box disk 97 %→62 %). Tapes cap at 250 MB (~42 min) — clip scoring to the tape span.
