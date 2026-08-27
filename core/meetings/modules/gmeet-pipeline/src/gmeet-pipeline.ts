@@ -34,6 +34,8 @@ export interface GmeetPipelineOptions {
   config?: SpeakerStreamManagerConfig;
   /** Silence gap (ms) on a channel that ends its turn (→ re-bind on the next onset). Default 1000. */
   onsetGapMs?: number;
+  /** Keep a speaker's turn open when the same glow name continues on another channel within onsetGapMs. */
+  hopMerge?: boolean;
   /** Surface a transcribe FAILURE (P18: fail loud + attributable). The pipeline still
    *  degrades gracefully (empty turn) so it doesn't wedge, but it reports the fault here
    *  so the host can make it observable (a /ws health frame, telemetry, lifecycle) instead
@@ -51,6 +53,7 @@ export interface GmeetPipeline {
 export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
   const UNKNOWN = opts.unknownLabel ?? 'Speaker';
   const ONSET_GAP = opts.onsetGapMs ?? 1000;
+  const HOP_MERGE = opts.hopMerge ?? (process.env.BOT_GMEET_HOP_MERGE !== '0');
   const mgr = new SpeakerStreamManager(opts.config);
   const inflight = new Set<Promise<void>>();
   // Per channel: the CURRENT turn's stream key, bound name, last-audio time, turn counter.
@@ -119,9 +122,27 @@ export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
       const gapOnset = !!st && tsMs - st.lastMs > ONSET_GAP;
       const glowRotation = !!st && !!glowName && st.name !== UNKNOWN && glowName !== st.name;
       if (!st || gapOnset || glowRotation) {
+        // Same-speaker channel hop (default on; BOT_GMEET_HOP_MERGE=0 disables): Meet reassigns its audio slots
+        // mid-sentence, so the SAME glow name continues on another channel with no pause.
+        // Keep that turn open (route this channel into it) instead of cutting a fresh
+        // sub-2 s window for Whisper.
+        if (HOP_MERGE && glowName && glowName !== UNKNOWN) {
+          const cont = [...chan.entries()].find(([c, o]) => c !== channel && o.name === glowName && tsMs - o.lastMs <= ONSET_GAP);
+          if (cont) {
+            if (st && st !== cont[1]) closeTurn(st.key);
+            st = cont[1];
+            chan.set(channel, st);
+            st.lastMs = tsMs;
+            mgr.feedAudio(st.key, pcm, tsMs);
+            return;
+          }
+        }
         // TURN ONSET / rotation: close the previous turn and open a fresh stream named
         // from the glow lit RIGHT NOW (fixed for the turn — held through overlap below).
-        if (st) closeTurn(st.key);
+        if (st) {
+          const sharedElsewhere = [...chan.entries()].some(([c, o]) => c !== channel && o === st);
+          if (!sharedElsewhere) closeTurn(st.key);
+        }
         const turn = (st ? st.turn : 0) + 1;
         const key = `ch-${channel}:${turn}`;
         st = { key, name: glowName || UNKNOWN, lastMs: tsMs, turn };

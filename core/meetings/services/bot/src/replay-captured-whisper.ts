@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   let calls = 0, callMs = 0;
   const config = speakerStreamConfigFromEnv();
   const onsetGapMs = Number(process.env.BOT_GMEET_ONSET_GAP_MS) > 0 ? Number(process.env.BOT_GMEET_ONSET_GAP_MS) : undefined;
-  console.error(`[replay-whisper] config=${JSON.stringify(config ?? 'defaults')} onsetGapMs=${onsetGapMs ?? 1000} gates=${process.env.WHISPER_GATES || 'strict'} lock=${process.env.WHISPER_LANG_LOCK || 'auto'}`);
+  console.error(`[replay-whisper] config=${JSON.stringify(config ?? 'defaults')} onsetGapMs=${onsetGapMs ?? 1000} gates=${process.env.WHISPER_GATES || 'strict'} lock=${process.env.WHISPER_LANG_LOCK || 'auto'} hopMerge=${process.env.BOT_GMEET_HOP_MERGE !== '0'}`);
   const pipe = createGmeetPipeline({
     config, onsetGapMs,
     // BIAS_PROMPT reproduces the bot's vocabulary bias (invocation.initialPrompt): bias leads, continuity follows.
