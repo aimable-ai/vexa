@@ -92,7 +92,7 @@ services:
     build:
       context: ../..
       dockerfile: services/admin-api/Dockerfile
-    image: vexaai/admin-api:${IMAGE_TAG}
+    image: ${VEXA_REGISTRY:-vexaai}/admin-api:${IMAGE_TAG}
     ports:
       - "127.0.0.1:${ADMIN_API_PORT:-8057}:8001"
     environment:
@@ -123,7 +123,7 @@ services:
     build:
       context: ../../services/runtime-api
       dockerfile: Dockerfile
-    image: vexaai/runtime-api:${IMAGE_TAG}
+    image: ${VEXA_REGISTRY:-vexaai}/runtime-api:${IMAGE_TAG}
     group_add:
       - "${DOCKER_GID:-998}"
     ports:
@@ -210,7 +210,7 @@ services:
     build:
       context: ../..
       dockerfile: services/api-gateway/Dockerfile
-    image: vexaai/api-gateway:${IMAGE_TAG}
+    image: ${VEXA_REGISTRY:-vexaai}/api-gateway:${IMAGE_TAG}
     mem_limit: 1g
     ports:
       - "${API_GATEWAY_HOST_PORT:-8056}:8000"
@@ -248,7 +248,7 @@ services:
     build:
       context: ../..
       dockerfile: services/meeting-api/Dockerfile
-    image: vexaai/meeting-api:${IMAGE_TAG}
+    image: ${VEXA_REGISTRY:-vexaai}/meeting-api:${IMAGE_TAG}
     mem_limit: 1g
     expose:
       - "8080"
@@ -334,7 +334,7 @@ services:
     build:
       context: ../..
       dockerfile: services/mcp/Dockerfile
-    image: vexaai/mcp:${IMAGE_TAG}
+    image: ${VEXA_REGISTRY:-vexaai}/mcp:${IMAGE_TAG}
     mem_limit: 512m
     ports:
       - "127.0.0.1:${MCP_HOST_PORT:-18888}:18888"
@@ -359,7 +359,7 @@ services:
         NEXT_PUBLIC_VEXA_OSS_VERSION: ${VEXA_VERSION:-}
         NEXT_PUBLIC_VEXA_OSS_RELEASE_DATE: ${VEXA_RELEASE_DATE:-}
         VEXA_API_URL: http://api-gateway:8000
-    image: vexaai/dashboard:${IMAGE_TAG}
+    image: ${VEXA_REGISTRY:-vexaai}/dashboard:${IMAGE_TAG}
     mem_limit: 1g
     ports:
       - "${DASHBOARD_HOST_PORT:-3001}:3000"
@@ -387,7 +387,7 @@ services:
     build:
       context: ../..
       dockerfile: services/tts-service/Dockerfile
-    image: vexaai/tts-service:${IMAGE_TAG}
+    image: ${VEXA_REGISTRY:-vexaai}/tts-service:${IMAGE_TAG}
     mem_limit: 1g
     expose:
       - "8002"

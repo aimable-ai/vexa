@@ -1,0 +1,217 @@
+name: Deploy Vexa (Aimable Capture)
+
+# AIM-1888 — CI/CD for the Aimable Capture / Vexa stack.
+#
+# Mirrors the Aimable-platform deploy: build every Aimable-built Vexa service
+# image, push to GHCR, then SSH to the target host and `docker compose pull &&
+# up -d` the pinned images. No more building images on the box.
+#
+# The host keeps its own `.env` next to the compose file (DB creds, ADMIN_TOKEN,
+# MinIO keys, transcription URL, …). This workflow NEVER rewrites that env — it
+# only overrides the image coordinates (VEXA_REGISTRY + IMAGE_TAG) for the pull,
+# so no secret is duplicated into CI.
+#
+# Required per-environment GitHub config (Settings → Environments → <env>):
+#   secrets: SSH_KEY, HOST, USERNAME            (target host access)
+#            PROXY_HOST, PROXY_KEY, PROXY_USERNAME  (optional bastion/jump)
+#   vars:    VEXA_DEPLOY_DIR   (optional, default /opt/vexa/deploy/compose)
+#            DEPLOY_RUNNER     (optional self-hosted runner label)
+# GITHUB_TOKEN (auto) is used to push to and pull from GHCR.
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: 'Target Deployment Environment'
+        required: true
+        default: 'multitenant'
+        type: choice
+        options:
+          - multitenant
+          - test
+
+env:
+  REGISTRY: ghcr.io
+  # GHCR namespace the Vexa images live under. Matches the compose's
+  # ${VEXA_REGISTRY} so the host pulls ghcr.io/aimable-ai/<service>:<tag>.
+  IMAGE_NAMESPACE: aimable-ai
+
+jobs:
+  determine-environments:
+    runs-on: ${{ vars.DEPLOY_RUNNER || 'ubuntu-latest' }}
+    outputs:
+      environments: ${{ steps.set-envs.outputs.environments }}
+    steps:
+      - id: set-envs
+        run: |
+          if [ -n "${{ inputs.target_environment }}" ]; then
+            echo 'environments=["${{ inputs.target_environment }}"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'environments=["multitenant"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-push:
+    needs: determine-environments
+    runs-on: ${{ vars.DEPLOY_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(needs.determine-environments.outputs.environments) }}
+        service:
+          # service = compose service name = GHCR image name. context/dockerfile
+          # mirror deploy/compose/docker-compose.yml exactly.
+          - { name: admin-api,    context: ".",                     dockerfile: services/admin-api/Dockerfile }
+          - { name: runtime-api,  context: "services/runtime-api",  dockerfile: Dockerfile }
+          - { name: api-gateway,  context: ".",                     dockerfile: services/api-gateway/Dockerfile }
+          - { name: meeting-api,  context: ".",                     dockerfile: services/meeting-api/Dockerfile }
+          - { name: mcp,          context: ".",                     dockerfile: services/mcp/Dockerfile }
+          - { name: dashboard,    context: ".",                     dockerfile: services/dashboard/Dockerfile }
+          - { name: tts-service,  context: ".",                     dockerfile: services/tts-service/Dockerfile }
+    environment: ${{ matrix.environment }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service.name }}
+          tags: |
+            type=raw,value=${{ matrix.environment }}
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.description=Aimable Capture (Vexa) — ${{ matrix.service.name }}
+
+      - name: Build and push ${{ matrix.service.name }}
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.service.context }}
+          file: ${{ matrix.service.context }}/${{ matrix.service.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service.name }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service.name }}:buildcache,mode=max
+
+  deploy:
+    needs: [determine-environments, build-and-push]
+    runs-on: ${{ vars.DEPLOY_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      matrix:
+        environment: ${{ fromJSON(needs.determine-environments.outputs.environments) }}
+    environment: ${{ matrix.environment }}
+    # One deploy per environment at a time; queue rather than cancel so a
+    # half-finished pull/up isn't interrupted.
+    concurrency:
+      group: deploy-vexa-${{ matrix.environment }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository (for the compose file)
+        uses: actions/checkout@v5
+
+      - name: Deploy to host via SSH (with retries)
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 8
+          max_attempts: 5
+          retry_wait_seconds: 15
+          command: |
+            which ssh || sudo apt-get update && sudo apt-get install -y openssh-client
+
+            mkdir -p ~/.ssh
+            echo "${{ secrets.SSH_KEY }}" > ~/.ssh/target_key
+            chmod 600 ~/.ssh/target_key
+
+            if [ -n "${{ secrets.PROXY_HOST }}" ]; then
+              echo "${{ secrets.PROXY_KEY }}" > ~/.ssh/proxy_key
+              chmod 600 ~/.ssh/proxy_key
+              cat > ~/.ssh/config << EOF
+            Host proxy
+              HostName ${{ secrets.PROXY_HOST }}
+              User ${{ secrets.PROXY_USERNAME }}
+              IdentityFile ~/.ssh/proxy_key
+              StrictHostKeyChecking no
+
+            Host target
+              HostName ${{ secrets.HOST }}
+              User ${{ secrets.USERNAME }}
+              IdentityFile ~/.ssh/target_key
+              ProxyJump proxy
+              StrictHostKeyChecking no
+              ConnectTimeout 15
+            EOF
+            else
+              cat > ~/.ssh/config << EOF
+            Host target
+              HostName ${{ secrets.HOST }}
+              User ${{ secrets.USERNAME }}
+              IdentityFile ~/.ssh/target_key
+              StrictHostKeyChecking no
+              ConnectTimeout 15
+            EOF
+            fi
+            chmod 600 ~/.ssh/config
+
+            DEPLOY_DIR="${{ vars.VEXA_DEPLOY_DIR || '/opt/vexa/deploy/compose' }}"
+
+            echo "Copying compose file to $DEPLOY_DIR ..."
+            ssh target "mkdir -p '$DEPLOY_DIR'"
+            scp deploy/compose/docker-compose.yml "target:$DEPLOY_DIR/docker-compose.yml"
+
+            # Immutable image tag: sha-<short>. Avoids a mutable :<env> race
+            # between two near-simultaneous deploys.
+            IMAGE_TAG="sha-$(echo '${{ github.sha }}' | cut -c1-7)"
+
+            echo "Deploying on host (dir=$DEPLOY_DIR, tag=$IMAGE_TAG) ..."
+            ssh target "bash -s" << ENDSSH
+              set -e
+              echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+              cd "$DEPLOY_DIR"
+
+              # Only override the image coordinates; the host's existing .env
+              # (DB creds, ADMIN_TOKEN, MinIO keys, transcription URL, …) is left
+              # untouched. compose reads these two from the process env below.
+              export VEXA_REGISTRY='${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}'
+              export IMAGE_TAG='$IMAGE_TAG'
+
+              SERVICES="admin-api runtime-api api-gateway meeting-api mcp dashboard tts-service"
+              docker compose -f docker-compose.yml pull \$SERVICES
+              docker compose -f docker-compose.yml up -d \$SERVICES
+
+              # Record what was deployed.
+              mkdir -p versions
+              printf '{"stack":"vexa","tag":"%s","commit":"%s","deployed_at":"%s"}\n' \
+                "$IMAGE_TAG" '${{ github.sha }}' "\$(date -u +'%Y-%m-%d %H:%M:%S UTC')" \
+                > versions/vexa.json
+
+              docker image prune -f >/dev/null 2>&1 || true
+            ENDSSH
+
+      - name: Smoke check (api-gateway health)
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 3
+          max_attempts: 6
+          retry_wait_seconds: 10
+          command: |
+            # Reuse the SSH config written above; hit the gateway on its
+            # loopback host port (8056) from the host itself.
+            PORT="${{ vars.VEXA_GATEWAY_PORT || '8056' }}"
+            ssh target "curl -fsS http://localhost:$PORT/ >/dev/null && echo 'gateway OK'"
