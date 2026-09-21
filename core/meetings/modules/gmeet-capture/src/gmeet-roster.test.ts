@@ -3,7 +3,7 @@
  * roster state built from it. Fixtures are encoded here with the same field layout Meet sends.
  * Run: npx tsx src/gmeet-roster.test.ts
  */
-import { createRosterState, decodeCollectionsMessage, decodeSyncResponse, parseFields, isSyncRpc, syncBytes, unpackCollections } from './gmeet-roster.js';
+import { createRosterState, decodeCollectionsMessage, decodeSyncResponse, parseFields, isSyncRpc, unpackCollections } from './gmeet-roster.js';
 
 let failed = 0;
 const check = (name: string, cond: boolean) => { console.log(`  ${cond ? '✅' : '❌'} ${name}`); if (!cond) failed++; };
@@ -86,10 +86,7 @@ const output = (kind: number, csrc: string, deviceId: string) => msg([2, kind], 
     check(`collections unpacks ${format}`, out.participants[0]?.name === 'Zoe');
   }
   check('uncompressed collections pass through', decodeCollectionsMessage(await unpackCollections(payload)).participants[0]?.name === 'Zoe');
-  const sync = msg([2, msg([2, msg([2, person('d/1', 'Alice')])])]);
-  check('sync body as base64 text', decodeSyncResponse(syncBytes(new TextEncoder().encode(Buffer.from(sync).toString('base64'))))[0]?.name === 'Alice');
   check('the live sync URL is recognised', isSyncRpc('https://meet.google.com/$rpc/google.rtc.meetings.v1.MeetingSpaceService/SyncMeetingSpaceCollections'));
-  check('sync body as raw protobuf', decodeSyncResponse(syncBytes(sync))[0]?.name === 'Alice');
 }
 
 if (failed) { console.error(`\n❌ gmeet-roster: ${failed} checks FAILED.`); process.exit(1); }

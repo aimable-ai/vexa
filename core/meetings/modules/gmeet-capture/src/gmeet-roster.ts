@@ -3,7 +3,7 @@
  * RTP contributing source (CSRC) each participant's audio rides on.
  *
  * Two protobuf sources, both Meet-internal and undocumented:
- *  - the SyncMeetingSpaceCollections RPC response (base64 text): the full participant list,
+ *  - the SyncMeetingSpaceCollections RPC response (base64 text, via fetch): the full participant list,
  *    re-synced by Meet periodically (most responses are empty: nothing changed) — a non-empty one
  *    is also how leaves show up;
  *  - the `collections` data channel (deflate-compressed): joins and each device's outputs.
@@ -109,8 +109,6 @@ export function createRosterState() {
   const deviceByCsrc = new Map<string, string>();
   const listeners: ((p: RosterParticipant[]) => void)[] = [];
   let lastKey = '';
-  let syncs = 0;
-  let updates = 0;
 
   const participants = (): RosterParticipant[] =>
     [...devices.values()]
@@ -134,20 +132,14 @@ export function createRosterState() {
     },
     /** A non-empty sync is the full list; an empty one means nothing changed. */
     applySync(list: MeetParticipant[]) {
-      syncs++;
       if (!list.length) return;
       devices = new Map(list.map(p => [p.id, p]));
       changed();
     },
     applyCollections({ participants: list, audio }: ReturnType<typeof decodeCollectionsMessage>) {
-      updates++;
       for (const p of list) devices.set(p.id, p);
       for (const o of audio) deviceByCsrc.set(o.csrc, o.deviceId);
       changed();
-    },
-    /** Diagnostics for the capture's periodic log line. */
-    stats() {
-      return { participants: participants().length, csrcs: deviceByCsrc.size, syncs, updates };
     },
     /** Called now with the current roster (if any) and again on every change. */
     subscribe(listener: (p: RosterParticipant[]) => void) {
@@ -170,17 +162,9 @@ export async function unpackCollections(bytes: Uint8Array): Promise<Uint8Array> 
 
 export const isSyncRpc = (url: string) => url.includes(SYNC_RPC);
 
-const BASE64 = /^[A-Za-z0-9+/=\s]+$/;
-
-/** A sync response body: base64 text of the protobuf, or the protobuf itself. */
-export function syncBytes(bytes: Uint8Array): Uint8Array {
-  const text = new TextDecoder().decode(bytes);
-  return BASE64.test(text) ? Uint8Array.from(atob(text.trim()), c => c.charCodeAt(0)) : bytes;
-}
-
 export type GmeetRoster = ReturnType<typeof createGmeetRoster>;
 
-/** Install the fetch/XHR hooks now; the host passes each new RTCPeerConnection to `watchPeerConnection`. */
+/** Install the fetch hook now; the host passes each new RTCPeerConnection to `watchPeerConnection`. */
 export function createGmeetRoster(opts: { log?: (m: string) => void } = {}) {
   const log = (m: string) => { try { opts.log?.('[GmeetRoster] ' + m); } catch { /* ignore */ } };
   const state = createRosterState();
@@ -191,35 +175,18 @@ export function createGmeetRoster(opts: { log?: (m: string) => void } = {}) {
     log(`${source} decode failed, DOM fallback stays in charge: ${(e as Error)?.message || e}`);
   };
 
-  const seenRpc = new Set<string>();
-  const onResponse = (url: string, body: () => Promise<Uint8Array>) => {
-    const rpc = url.match(/\$rpc\/([^?]+)/)?.[1];
-    if (rpc && !seenRpc.has(rpc) && seenRpc.size < 20) { seenRpc.add(rpc); log(`rpc seen: ${rpc}`); }
-    if (!isSyncRpc(url)) return;
-    body().then((bytes) => {
-      const list = decodeSyncResponse(syncBytes(bytes));
-      state.applySync(list);
-      if (list.length) log(`sync: ${state.participants().length} remote participant(s)`);
-    }).catch(fail('sync'));
-  };
-
   const originalFetch = window.fetch;
   window.fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
     const res = await originalFetch.apply(this, args);
-    try { onResponse(res.url, async () => new Uint8Array(await res.clone().arrayBuffer())); } catch (e) { fail('sync')(e); }
+    if (isSyncRpc(res.url)) {
+      res.clone().text().then((text) => {
+        const list = decodeSyncResponse(Uint8Array.from(atob(text.trim()), c => c.charCodeAt(0)));
+        state.applySync(list);
+        if (list.length) log(`sync: ${state.participants().length} remote participant(s)`);
+      }).catch(fail('sync'));
+    }
     return res;
   } as typeof fetch;
-
-  const originalOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, ...args: unknown[]) {
-    this.addEventListener('load', () => {
-      try {
-        onResponse(this.responseURL || String(args[1]), async () =>
-          typeof this.response === 'string' ? new TextEncoder().encode(this.response) : new Uint8Array(this.response));
-      } catch (e) { fail('sync')(e); }
-    });
-    return (originalOpen as (...a: unknown[]) => void).apply(this, args);
-  } as typeof XMLHttpRequest.prototype.open;
 
   const onCollections = async (data: ArrayBuffer | Blob) => {
     const bytes = new Uint8Array(data instanceof Blob ? await data.arrayBuffer() : data);

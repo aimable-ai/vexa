@@ -797,10 +797,7 @@ export async function startCaptureBridge(
   });
   await page.exposeFunction('__vexaNamedAudioData', onNamedAudio).catch(() => { /* optional */ });
   await page.exposeFunction('__vexaSpeakerHint', onSpeakerHint).catch(() => { /* optional */ });
-  await page.exposeFunction('__vexaRoster', (participants: { id: string; name: string }[]): void => {
-    console.log(`[bot] roster: ${participants.map(p => `${p.name}=${p.id}`).join(', ')}`);
-    speakerIds?.recordRoster(participants);
-  }).catch(() => { /* optional */ });
+  await page.exposeFunction('__vexaRoster', (participants: { id: string; name: string }[]): void => speakerIds?.recordRoster(participants)).catch(() => { /* optional */ });
   await page.exposeFunction('__vexaTeamsCaption', onTeamsCaption).catch(() => { /* optional */ });
   await page.exposeFunction('__vexaCsrc', onCsrc).catch(() => { /* optional */ });
   await page.exposeFunction('__vexaObservation', onObservation).catch(() => { /* optional */ });
@@ -1125,8 +1122,7 @@ export async function startCaptureBridge(
       w.__vexaCsrcByChannel = w.__vexaCsrcByChannel ?? {};
       const naming = { csrc: 0, glow: 0, none: 0 };
       w.__vexaNamingTimer = (globalThis as any).setInterval(() => {
-        w.logBot?.(`[GmeetRoster] audio named by csrc=${naming.csrc} glow=${naming.glow} none=${naming.none}`
-          + ` | roster ${JSON.stringify(w.__vexaGmeetRoster?.stats?.() ?? null)} csrcChannels=${JSON.stringify(w.__vexaCsrcByChannel)}`);
+        w.logBot?.(`[GmeetRoster] audio named by csrc=${naming.csrc} glow=${naming.glow} none=${naming.none}`);
       }, 60_000);
       w.__vexaGmeetCapture = w.VexaBrowserUtils.createGmeetCapture({
         log: (m: string) => w.logBot?.('[PerSpeaker] ' + m),
