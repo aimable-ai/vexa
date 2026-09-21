@@ -24,11 +24,13 @@ import { waitForJitsiMeetingAdmission, checkForJitsiAdmissionSilent } from "./ji
 import { leaveJitsiMeeting } from "./jitsi/leave";
 import { startJitsiRemovalMonitor } from "./jitsi/removal";
 import { startDebugView } from "./shared/escalation";
+import { ensureCameraOn } from "./shared/camera";
 import { setHooks, type BotConfig, type Hooks, type JoinState } from "./_host";
 import { JOIN_BROWSER_ARGS, getJoinBrowserArgs } from "./browser-args";
 
 export type { BotConfig, Hooks, JoinState };
 export { startDebugView, setHooks };
+export { ensureCameraOn, VIRTUAL_CAMERA_LABEL } from "./shared/camera";
 // Canonical browser launch args — the vexa-bot service and the debug harness both
 // build on this ONE set (browser-args.ts), so join↔bot flags never drift.
 export { JOIN_BROWSER_ARGS, getJoinBrowserArgs };
@@ -52,6 +54,8 @@ export interface JoinOptions {
   /** join as a signed-in user — caller hands in a persistent, logged-in context
    *  (e.g. from @vexa/remote-browser); the brick skips guest name-entry. */
   authenticated?: boolean;
+  /** turn the camera on instead of off, in the lobby and after admission (the embedder installed a virtual camera) */
+  keepCameraOn?: boolean;
   waitingRoomTimeoutMs?: number;
   /** turn on the live debug view (VNC pixels on Linux, CDP control anywhere) */
   debug?: boolean;
@@ -93,6 +97,7 @@ export async function joinMeeting(page: Page, opts: JoinOptions): Promise<JoinRe
     botName: opts.botName ?? defaultBotName(),
     passcode: opts.passcode,
     authenticated: opts.authenticated,
+    keepCameraOn: opts.keepCameraOn,
     uiInteractionMode: opts.uiInteractionMode,
     automaticLeave: { waitingRoomTimeout: opts.waitingRoomTimeoutMs ?? 180_000 },
   };
@@ -132,6 +137,9 @@ export async function joinMeeting(page: Page, opts: JoinOptions): Promise<JoinRe
       `Unsupported platform '${platform}' — this join layer drives google_meet, teams, zoom, jitsi`,
     );
   }
+
+  // Platforms may drop the camera on admission / renegotiation; turn it back on (virtual camera).
+  if (admitted && opts.keepCameraOn) await ensureCameraOn(page, platform);
 
   return { admitted: !!admitted, state: admitted ? "admitted" : "awaiting_admission" };
 }

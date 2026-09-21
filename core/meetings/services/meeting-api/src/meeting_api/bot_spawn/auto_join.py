@@ -188,7 +188,7 @@ def _spawn_kwargs(spawn: dict) -> dict:
     """data.spawn (planner-pinned per-meeting options, see collector POST /meetings) → the
     request_bot keyword arguments a manual POST /bots would carry. Unknown keys are ignored."""
     out: dict = {}
-    for k in ("language", "task", "bot_name", "passcode", "initial_prompt"):
+    for k in ("language", "task", "bot_name", "passcode", "initial_prompt", "default_avatar_url"):
         if spawn.get(k):
             out[k] = spawn[k]
     if spawn.get("transcription_tier"):

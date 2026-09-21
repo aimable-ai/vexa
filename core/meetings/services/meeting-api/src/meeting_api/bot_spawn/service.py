@@ -282,6 +282,7 @@ async def request_bot(
     # Whisper vocabulary bias (dictionary terms, participant/agent names) — prepended to the batch
     # lane's `prompt`; live engines have no prompt slot and ignore it.
     initial_prompt: Optional[str] = None,
+    default_avatar_url: Optional[str] = None,
     max_concurrent: Optional[int] = None,
     redis_url: Optional[str] = None,
     meeting_api_url: Optional[str] = None,
@@ -601,6 +602,7 @@ async def request_bot(
         transcription_service_token=transcription_service_token,
         transcription_model=transcription_model,
         initial_prompt=initial_prompt,
+        default_avatar_url=default_avatar_url,
         recording_enabled=recording_enabled,
         capture_modes=(["audio", "video"] if recording_enabled else None),
         # O-TEL-1: the tape is INDEPENDENT of recording_enabled — a meeting the user never asked to

@@ -72,6 +72,19 @@ def _validated_initial_prompt(value: Any) -> Optional[str]:
     return text
 
 
+def _validated_avatar_url(value: Optional[object]) -> Optional[str]:
+    """Image the bot shows as its camera tile (AIM-2050). http(s) only; the bot fetches it."""
+    if value is None or value == "":
+        return None
+    url = str(value).strip()
+    if not url.lower().startswith(("http://", "https://")) or len(url) > 2048:
+        raise HTTPException(
+            status_code=422,
+            detail="default_avatar_url must be an http(s):// URL (max 2048 chars)",
+        )
+    return url
+
+
 def _validated_stt_url(value: Optional[object]) -> Optional[str]:
     """Per-request STT override URL: ws(s):// (live engines) or http(s)://
     (batch). Anything else is a 422 at the door — a bad scheme would otherwise
@@ -431,6 +444,7 @@ def build_router(
                 transcription_service_token_override=body.get("transcription_service_token"),
                 transcription_model_override=body.get("transcription_model"),
                 initial_prompt=_validated_initial_prompt(body.get("initial_prompt")),
+                default_avatar_url=_validated_avatar_url(body.get("default_avatar_url")),
                 max_concurrent=max_concurrent,
                 webhook_url=x_user_webhook_url,
                 webhook_secret=x_user_webhook_secret,

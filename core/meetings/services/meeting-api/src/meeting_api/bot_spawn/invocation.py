@@ -152,6 +152,7 @@ def build_invocation(
     transcription_service_token: Optional[str] = None,
     transcription_model: Optional[str] = None,
     initial_prompt: Optional[str] = None,
+    default_avatar_url: Optional[str] = None,
     authenticated: Optional[bool] = None,
     userdata_s3_path: Optional[str] = None,
     s3_endpoint: Optional[str] = None,
@@ -182,6 +183,7 @@ def build_invocation(
         "transcriptionServiceToken": transcription_service_token,
         "transcriptionModel": transcription_model,
         "initialPrompt": initial_prompt,
+        "defaultAvatarUrl": default_avatar_url,
         "recordingEnabled": recording_enabled,
         "captureModes": capture_modes,
         # O-TEL-1 (sealed invocation.v1 field): tee the raw captured-signal.v1 stream to durable
