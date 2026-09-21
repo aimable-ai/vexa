@@ -91,7 +91,7 @@ async def _publish_user_meeting_status(
 _SPAWN_STR_KEYS = frozenset({
     "language", "task", "bot_name", "passcode", "transcription_tier",
     "transcription_service_url", "transcription_service_token", "transcription_model",
-    "initial_prompt",
+    "initial_prompt", "default_avatar_url",
 })
 _SPAWN_BOOL_KEYS = frozenset({"recording_enabled", "transcribe_enabled"})
 

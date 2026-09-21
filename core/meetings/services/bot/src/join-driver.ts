@@ -16,6 +16,7 @@ import {
 import type { BotStatus } from './contracts.js';
 import type { Invocation } from './config.js';
 import type { JoinDriver, JoinOutcome, JoinResult } from './ports.js';
+import { wantsVirtualCamera } from './virtual-camera.js';
 
 /**
  * Map @vexa/join's typed AdmissionError `outcome` → a JoinOutcome (G1).
@@ -68,6 +69,7 @@ export function createBrowserJoinDriver(page: Page, inv: Invocation): JoinDriver
           botName: inv.botName,
           passcode: inv.passcode,                      // zoom passcode screen / jitsi room password
           authenticated: inv.authenticated,            // join as a signed-in user (persistent context)
+          keepCameraOn: wantsVirtualCamera(inv),       // AIM-2050: the virtual camera shows the avatar
           waitingRoomTimeoutMs: inv.automaticLeave?.waitingRoomTimeout,
           hooks: { onState: (s: JoinState) => { const bs = mapState(s); if (bs) void report(bs); } },
         });

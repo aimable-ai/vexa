@@ -392,6 +392,17 @@ export async function joinGoogleMeeting(
     await page.fill(selector, text);
   };
 
+  // Camera off, unless the embedder installed a virtual camera (keepCameraOn): then make sure it is on.
+  const setLobbyCamera = async (timeout: number): Promise<void> => {
+    const selector = botConfig.keepCameraOn ? 'button[aria-label*="Turn on camera"]' : googleCameraButtonSelectors[0];
+    try {
+      const cameraHandle = await page.waitForSelector(selector, { timeout });
+      if (cameraHandle) { await clickHandle(cameraHandle, "camera"); log(botConfig.keepCameraOn ? "Camera turned on." : "Camera turned off."); }
+    } catch (e) {
+      log(botConfig.keepCameraOn ? "Camera already on or not found." : "Camera already off or not found.");
+    }
+  };
+
   if (botConfig.authenticated) {
     // Authenticated flow: browser is logged into Google, skip name input
     log("Authenticated mode: skipping name input (using Google account identity)");
@@ -412,12 +423,7 @@ export async function joinGoogleMeeting(
       log("Microphone already muted or not found.");
     }
 
-    try {
-      const cameraHandle = await page.waitForSelector(googleCameraButtonSelectors[0], { timeout: 3000 });
-      if (cameraHandle) { await clickHandle(cameraHandle, "camera"); log("Camera turned off."); }
-    } catch (e) {
-      log("Camera already off or not found.");
-    }
+    await setLobbyCamera(3000);
 
     // Authenticated lobby: one primary CTA — "Join now" (standard join),
     // "Switch here" (same account already in the call) or "Ask to join"
@@ -475,12 +481,7 @@ export async function joinGoogleMeeting(
       log("Microphone already muted or not found.");
     }
 
-    try {
-      const cameraHandle = await page.waitForSelector(googleCameraButtonSelectors[0], { timeout: 1000 });
-      if (cameraHandle) await clickHandle(cameraHandle, "camera");
-    } catch (e) {
-      log("Camera already off or not found.");
-    }
+    await setLobbyCamera(1000);
 
     const { handle: joinHandle } = await waitForLobbyCta(
       page,

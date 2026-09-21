@@ -24,6 +24,7 @@
  * cross as plain `(speakerIndex: number, samples: number[])` over `page.exposeFunction`, exactly
  * as production does, so the bot's import surface stays within the gate.
  */
+import { buildVirtualCameraInitScript, resolveAvatarDataUri, wantsVirtualCamera } from './virtual-camera.js';
 import {
   launchPersistentBrowser,
   syncBrowserDataFromS3,
@@ -608,6 +609,13 @@ export async function launchBrowser(inv: Invocation): Promise<BrowserSession> {
 
   // Voice-agent gate the page reads to decide whether to keep the mic hot (production parity).
   await context.addInitScript(`window.__vexa_voice_agent_enabled = ${!!inv.voiceAgentEnabled};`);
+  // AIM-2050: the camera tile shows the avatar (Google Meet only; join keeps the camera on).
+  if (wantsVirtualCamera(inv)) {
+    const avatar = await resolveAvatarDataUri(inv.defaultAvatarUrl!);
+    await context.addInitScript(buildVirtualCameraInitScript(avatar)).catch((e: unknown) => {
+      console.error(`[bot] virtual camera not installed: ${String(e)}`);
+    });
+  }
   // Inject the page-side capture bundle on every navigation (defines window.VexaBrowserUtils).
   await context.addInitScript({ path: BROWSER_UTILS_PATH }).catch(() => {
     // The bundle may be loaded by other means in some images; capture wiring degrades to the
