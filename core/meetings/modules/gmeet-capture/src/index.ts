@@ -11,6 +11,8 @@ export { createGmeetCapture } from "./gmeet-capture.js";
 export type { GmeetCapture } from "./gmeet-capture.js";
 export { createGmeetSpeakers } from "./gmeet-speakers.js";
 export type { GmeetSpeakers } from "./gmeet-speakers.js";
+export { createGmeetRoster, createRosterState, decodeSyncResponse, decodeCollectionsMessage } from "./gmeet-roster.js";
+export type { GmeetRoster, MeetParticipant, RosterParticipant } from "./gmeet-roster.js";
 export { createGmeetCaptureV1, pickBoundName } from "./gmeet-capture-v1.js";
 export type { GmeetCaptureV1, GmeetCaptureV1Options } from "./gmeet-capture-v1.js";
 export { GmeetChannelBinder } from "./gmeet-channel-binder.js";

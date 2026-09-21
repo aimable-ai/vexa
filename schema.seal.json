@@ -43,6 +43,7 @@
       "segment_id": "Column(String, nullable=True)",
       "session_uid": "Column(String, nullable=True, index=True)",
       "speaker": "Column(String(255), nullable=True)",
+      "speaker_id": "Column(String(255), nullable=True)",
       "start_time": "Column(Float, nullable=False)",
       "text": "Column(Text, nullable=False)"
     },
@@ -85,6 +86,7 @@
       "segment_id": "Column(String, nullable=True)",
       "session_uid": "Column(String, nullable=True, index=True)",
       "speaker": "Column(String(255), nullable=True)",
+      "speaker_id": "Column(String(255), nullable=True)",
       "start_time": "Column(Float, nullable=False)",
       "text": "Column(Text, nullable=False)"
     }

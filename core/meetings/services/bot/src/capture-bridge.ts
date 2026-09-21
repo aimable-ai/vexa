@@ -42,6 +42,7 @@ import type { BotPipeline } from './pipeline.js';
 import type { BotRecordingSink } from './recording.js';
 import type { TelemetrySink } from './ports.js';
 import type { RemoteAudioActivityTap } from './aloneness.js';
+import type { SpeakerIds } from './speaker-ids.js';
 import { createTtsPlayback } from './tts-playback.js';
 
 /** Float32 PCM → base64 of its little-endian bytes — the EXACT codec wire payload, so a stored
@@ -656,9 +657,15 @@ export async function launchBrowser(inv: Invocation): Promise<BrowserSession> {
     // elements, so mirroring would present every remote track twice. The registry exists for the
     // transport sensor: Meet forwards three static SSRC slots and stamps the true participant as
     // CSRC (Meet Media API docs), which is a per-person identity the glow can only approximate.
-    await context.addInitScript(
-      `try { window.VexaBrowserUtils && window.VexaBrowserUtils.installRemoteAudioHook && window.VexaBrowserUtils.installRemoteAudioHook({ registryOnly: true }); } catch (e) {}`,
-    ).catch(() => { /* non-fatal */ });
+    // The same peer-connection hook also hands each connection to the protocol roster, whose
+    // `collections` data channel opens during the join — long before capture starts.
+    await context.addInitScript(`try {
+      var U = window.VexaBrowserUtils;
+      var roster = U && U.createGmeetRoster && U.createGmeetRoster({ log: function (m) { window.logBot && window.logBot(m); } });
+      if (roster) window.__vexaGmeetRoster = roster;
+      U && U.installRemoteAudioHook && U.installRemoteAudioHook({ registryOnly: true,
+        onPeerConnection: roster ? function (pc) { roster.watchPeerConnection(pc); } : undefined });
+    } catch (e) {}`).catch(() => { /* non-fatal */ });
   }
 
   // Observability (L4): route the page-side capture's log(m) → container stdout. gmeet-capture
@@ -712,6 +719,8 @@ export async function startCaptureBridge(
   onChat?: (sender: string, text: string) => void,
   /** Active-phase silence signal. It remains unavailable until page capture reports ready. */
   activity?: RemoteAudioActivityTap,
+  /** gmeet: roster snapshots (participant id + name) cross here to resolve segment speaker ids. */
+  speakerIds?: SpeakerIds,
 ): Promise<() => Promise<void>> {
   const mixed = isMixedLanePlatform(inv.platform);
   const jitsi = inv.platform === 'jitsi';
@@ -788,6 +797,7 @@ export async function startCaptureBridge(
   });
   await page.exposeFunction('__vexaNamedAudioData', onNamedAudio).catch(() => { /* optional */ });
   await page.exposeFunction('__vexaSpeakerHint', onSpeakerHint).catch(() => { /* optional */ });
+  await page.exposeFunction('__vexaRoster', (participants: { id: string; name: string }[]): void => speakerIds?.recordRoster(participants)).catch(() => { /* optional */ });
   await page.exposeFunction('__vexaTeamsCaption', onTeamsCaption).catch(() => { /* optional */ });
   await page.exposeFunction('__vexaCsrc', onCsrc).catch(() => { /* optional */ });
   await page.exposeFunction('__vexaObservation', onObservation).catch(() => { /* optional */ });
@@ -1098,15 +1108,34 @@ export async function startCaptureBridge(
     // gmeet lane: per-channel capture + glow attribution (the SAME module the extension runs).
     if (w.VexaBrowserUtils?.createGmeetCapture && !w.__vexaGmeetCapture) {
       w.__vexaGmeetSpeakers = w.__vexaGmeetSpeakers
-        ?? w.VexaBrowserUtils.createGmeetSpeakers?.({ log: (m: string) => w.logBot?.('[PerSpeaker] ' + m) });
+        ?? w.VexaBrowserUtils.createGmeetSpeakers?.({
+          log: (m: string) => w.logBot?.('[PerSpeaker] ' + m),
+          // DOM tiles are the fallback roster: used only while Meet's protocol roster is empty.
+          onRoster: (participants: { id: string; name: string }[]) => {
+            if (!w.__vexaGmeetRoster?.participants?.().length) w.__vexaRoster?.(participants);
+          },
+        });
+      w.__vexaGmeetRoster?.subscribe?.((participants: { id: string; name: string }[]) => {
+        if (participants.length) w.__vexaRoster?.(participants);
+      });
+      // Which participant each channel carries right now, from the CSRC transitions below.
+      w.__vexaCsrcByChannel = w.__vexaCsrcByChannel ?? {};
+      const naming = { csrc: 0, glow: 0, none: 0 };
+      w.__vexaNamingTimer = (globalThis as any).setInterval(() => {
+        w.logBot?.(`[GmeetRoster] audio named by csrc=${naming.csrc} glow=${naming.glow} none=${naming.none}`);
+      }, 60_000);
       w.__vexaGmeetCapture = w.VexaBrowserUtils.createGmeetCapture({
         log: (m: string) => w.logBot?.('[PerSpeaker] ' + m),
         onAudio: (index: number, pcm: Float32Array) => {
           w.__vexaGmeetSpeakers?.reportTrackAudio?.(index);
-          // Bind the glow name at capture time (the v1 producer's inversion): exactly-one-lit ⇒ name.
-          const lit: string[] = w.__vexaGmeetSpeakers?.litNames?.() ?? [];
-          const glow = lit.length === 1 ? lit[0] : undefined;
-          if (glow) w.__vexaNamedAudioData(index, glow, Array.from(pcm), Date.now());
+          // Name at capture time: Meet's own CSRC → participant mapping when the protocol roster
+          // knows the channel's source; else the glow (exactly-one-lit ⇒ name).
+          const csrc = w.__vexaCsrcByChannel[index];
+          const viaCsrc: string | undefined = csrc !== undefined ? w.__vexaGmeetRoster?.participantForCsrc?.(csrc)?.name : undefined;
+          const lit: string[] = viaCsrc ? [] : (w.__vexaGmeetSpeakers?.litNames?.() ?? []);
+          const name = viaCsrc ?? (lit.length === 1 ? lit[0] : undefined);
+          naming[viaCsrc ? 'csrc' : name ? 'glow' : 'none']++;
+          if (name) w.__vexaNamedAudioData(index, name, Array.from(pcm), Date.now());
           else w.__vexaPerSpeakerAudioData(index, Array.from(pcm), Date.now());
         },
       });
@@ -1118,9 +1147,14 @@ export async function startCaptureBridge(
       if (w.VexaBrowserUtils?.createCsrcPoll && !w.__vexaCsrcPoll) {
         try {
           w.__vexaCsrcPoll = w.VexaBrowserUtils.createCsrcPoll({
-            onTransition: (t: { csrc: number; active: boolean; tMs: number; audioLevel?: number; rtpTimestamp?: number; track?: string; ssrc?: number }) =>
-              w.__vexaCsrc?.(t.csrc, t.active, t.tMs, t.audioLevel, t.rtpTimestamp, t.track, t.ssrc,
-                t.track ? w.__vexaGmeetCapture?.channelOfTrack?.(t.track) : undefined),
+            onTransition: (t: { csrc: number; active: boolean; tMs: number; audioLevel?: number; rtpTimestamp?: number; track?: string; ssrc?: number }) => {
+              const channel = t.track ? w.__vexaGmeetCapture?.channelOfTrack?.(t.track) : undefined;
+              if (channel !== undefined) {
+                if (t.active) w.__vexaCsrcByChannel[channel] = t.csrc;
+                else if (w.__vexaCsrcByChannel[channel] === t.csrc) delete w.__vexaCsrcByChannel[channel];
+              }
+              w.__vexaCsrc?.(t.csrc, t.active, t.tMs, t.audioLevel, t.rtpTimestamp, t.track, t.ssrc, channel);
+            },
             onObservation: (o: Record<string, unknown>) => {
               w.logBot?.('[Csrc] observation ' + JSON.stringify(o));
               w.__vexaObservation?.('csrc', o, Date.now());

@@ -2,6 +2,7 @@
   "segment_id": "sess-uid:ch-0:1:1500",
   "speaker": "Alice",
   "speaker_key": "ch-0:1",
+  "speaker_id": "spaces/abc/devices/42",
   "text": "hello world",
   "start": 1.5,
   "end": 2.5,

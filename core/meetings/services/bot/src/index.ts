@@ -30,6 +30,7 @@ import { createHttpLifecycleSink } from './adapters/lifecycle-http.js';
 import { createRedisTranscriptSink, redisClientFrom } from './adapters/transcript-redis.js';
 import { createRedisActsSource, redisActsClientFrom } from './adapters/acts-redis.js';
 import { createBrowserJoinDriver } from './join-driver.js';
+import { createSpeakerIds, withSpeakerIds } from './speaker-ids.js';
 import { createBotPipeline, createLivePipeline, createTranscribe, liveEngineForUrl, serr, type BotPipeline } from './pipeline.js';
 import { createBotRecordingSink } from './recording.js';
 import { createCaptureSignalRecorder, startBotLogSidecar, wrapTranscribeWithTap, wrapTranscriptWithSnapshot, type CaptureSignalRecorder } from './telemetry.js';
@@ -212,7 +213,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   // "what did this meeting actually say?" could only be answered by re-running it against a redis
   // that no longer exists by then.
   const snapshot = signalRecorder ? wrapTranscriptWithSnapshot<TranscriptSegment, TranscriptSink>(liveTranscript, signalRecorder.transcriptPath) : null;
-  const transcript: TranscriptSink = snapshot ?? liveTranscript;
+  const speakerIds = createSpeakerIds();
+  const transcript: TranscriptSink = withSpeakerIds(snapshot ?? liveTranscript, speakerIds);
   // Counts STT failures across the meeting so the terminal lifecycle event can carry WHY a
   // transcript is short or empty, instead of leaving it indistinguishable from a silent room.
   const sttFaults = createSttFaultReporter();
@@ -277,7 +279,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // each failure surfaces LOUD via onFault (console with a full-fidelity serr(e)) instead of
     // throwing into the orchestrator's leave-on-fail backstop (which would hang the bot up).
     pipeline = createLivePipeline({
-      startCapture: () => startCaptureBridge(sess.page, inv, bp, signalRecorder?.sink, publishChat, remoteAudioActivity),   // on the live meeting page
+      startCapture: () => startCaptureBridge(sess.page, inv, bp, signalRecorder?.sink, publishChat, remoteAudioActivity, speakerIds),   // on the live meeting page
       startRecording: rec ? () => startRecording(sess.page, inv, rec) : undefined,          // MediaRecorder → recording.v1
       engine: bp,
       onFault: (stage, e) => {
