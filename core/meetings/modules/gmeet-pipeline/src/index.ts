@@ -11,7 +11,7 @@
  * diarization. Contrast @vexa/mixed-pipeline (one mixed stream, names from hints).
  */
 export { createGmeetPipeline } from './gmeet-pipeline.js';
-export type { GmeetPipeline, GmeetPipelineOptions } from './gmeet-pipeline.js';
+export type { GmeetPipeline, GmeetPipelineOptions, SpeakerTurn } from './gmeet-pipeline.js';
 export { SpeakerStreamManager } from './speaker-streams.js';
 export type { SpeakerStreamManagerConfig } from './speaker-streams.js';
 export { isHallucination, hallucinationPhrases } from './hallucination-filter.js';

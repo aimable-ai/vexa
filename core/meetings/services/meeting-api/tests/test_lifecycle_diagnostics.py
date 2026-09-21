@@ -246,6 +246,21 @@ def test_degraded_meeting_persists_why_the_transcript_is_empty():
     assert status_hooks[-1]["data"]["meeting"]["data"]["stt_fault"]["total"] == 18
 
 
+def test_terminal_event_persists_speaker_events():
+    """AIM-2063: who spoke when rides the terminal event and lands in meeting.data, so the
+    post-meeting transcript can attribute words live STT never produced."""
+    events = [{"speaker": "Arjé Cahn", "start": 1789729390.8, "end": 1789729402.1},
+              {"speaker": "Gunter", "start": 1789729395.0, "end": 1789729396.2}]
+    terminal = {
+        "connection_id": "sess-uid", "status": "completed", "exit_code": 0,
+        "completion_reason": "left_alone", "speaker_events": events,
+    }
+    conforms(terminal, "LifecycleEvent")
+    client, app, deliveries = _client()
+    final = _drive(client, JOINING, ACTIVE, terminal)[-1]
+    assert final["data"]["speaker_events"] == events
+
+
 def test_healthy_meeting_carries_no_stt_fault():
     """Negative control: the field appears ONLY when something actually degraded."""
     client, app, deliveries = _client()

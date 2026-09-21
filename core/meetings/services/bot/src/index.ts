@@ -30,7 +30,7 @@ import { createHttpLifecycleSink } from './adapters/lifecycle-http.js';
 import { createRedisTranscriptSink, redisClientFrom } from './adapters/transcript-redis.js';
 import { createRedisActsSource, redisActsClientFrom } from './adapters/acts-redis.js';
 import { createBrowserJoinDriver } from './join-driver.js';
-import { createSpeakerIds, withSpeakerIds } from './speaker-ids.js';
+import { createSpeakerIds, turnsWithSpeakerIds, withSpeakerIds } from './speaker-ids.js';
 import { createBotPipeline, createLivePipeline, createTranscribe, liveEngineForUrl, serr, type BotPipeline } from './pipeline.js';
 import { createBotRecordingSink } from './recording.js';
 import { createCaptureSignalRecorder, startBotLogSidecar, wrapTranscribeWithTap, wrapTranscriptWithSnapshot, type CaptureSignalRecorder } from './telemetry.js';
@@ -278,7 +278,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // page-side capture + recording attach + the engine start so pipeline.start() ALWAYS RESOLVES;
     // each failure surfaces LOUD via onFault (console with a full-fidelity serr(e)) instead of
     // throwing into the orchestrator's leave-on-fail backstop (which would hang the bot up).
-    pipeline = createLivePipeline({
+    const live = createLivePipeline({
       startCapture: () => startCaptureBridge(sess.page, inv, bp, signalRecorder?.sink, publishChat, remoteAudioActivity, speakerIds),   // on the live meeting page
       startRecording: rec ? () => startRecording(sess.page, inv, rec) : undefined,          // MediaRecorder → recording.v1
       engine: bp,
@@ -286,6 +286,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
         console.error(`[bot] live-pipeline: ${stage} failed (non-fatal, bot stays seated): ${serr(e)}`);
       },
     });
+    pipeline = { ...live, speakerEvents: () => turnsWithSpeakerIds(live.speakerEvents?.() ?? [], speakerIds) };
     // Voice: tee acts so `speak`/`speak_stop` reach the SpeakController (gated on voiceAgentEnabled).
     const speak = createSpeakController(session.page, inv);
     acts = teeActs(liveActs, voiceHandler(speak));
