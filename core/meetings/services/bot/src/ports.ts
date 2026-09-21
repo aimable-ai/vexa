@@ -59,7 +59,7 @@ export interface Pipeline {
   speakerEvents?(): SpeakerEvent[];
 }
 
-export interface SpeakerEvent { speaker: string; start: number; end: number }
+export interface SpeakerEvent { speaker: string; start: number; end: number; speaker_id?: string }
 
 /** transcript.v1 egress — the engine pushes speaker-attributed segments here; the real
  *  adapter publishes them to the redis stream / bus consumed by the collector. */

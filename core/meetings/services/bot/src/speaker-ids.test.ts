@@ -2,7 +2,7 @@
  * speaker-ids — roster snapshots resolve a segment's speaker name to one participant id.
  * Run: npx tsx src/speaker-ids.test.ts
  */
-import { createSpeakerIds, withSpeakerIds } from './speaker-ids.js';
+import { createSpeakerIds, turnsWithSpeakerIds, withSpeakerIds } from './speaker-ids.js';
 import type { TranscriptSegment } from './contracts.js';
 import type { TranscriptSink } from './ports.js';
 
@@ -43,6 +43,9 @@ const check = (name: string, cond: boolean) => { console.log(`  ${cond ? '✅' :
   await sink.retract?.(['s-Alice']);
   check('retract passes through', JSON.stringify(retracted) === JSON.stringify([['s-Alice']]));
   check('a sink without retract stays without one', withSpeakerIds({ publish: async () => {} }, ids).retract === undefined);
+  const turns = turnsWithSpeakerIds([{ speaker: 'Alice', start: 1, end: 2 }, { speaker: 'Carol', start: 2, end: 3 }], ids);
+  check('a speaker turn with a resolvable name is stamped', turns[0].speaker_id === 'p1');
+  check('an unresolvable speaker turn is not stamped', !('speaker_id' in turns[1]));
 }
 
 if (failed) { console.error(`\n❌ speaker-ids: ${failed} checks FAILED.`); process.exit(1); }

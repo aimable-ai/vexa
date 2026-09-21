@@ -7,7 +7,7 @@
  * name, that name has no id — never a guess. Segments are stamped when published.
  */
 import type { TranscriptSegment } from './contracts.js';
-import type { TranscriptSink } from './ports.js';
+import type { SpeakerEvent, TranscriptSink } from './ports.js';
 
 export interface SpeakerIds {
   recordRoster(participants: { id: string; name: string }[]): void;
@@ -37,6 +37,14 @@ export function createSpeakerIds(): SpeakerIds {
 }
 
 /** Stamps `speaker_id` on each published segment whose speaker name resolves to one id. */
+/** Stamps `speaker_id` on each speaker turn whose name resolves to one id. */
+export function turnsWithSpeakerIds(turns: SpeakerEvent[], ids: SpeakerIds): SpeakerEvent[] {
+  return turns.map((t) => {
+    const id = ids.idFor(t.speaker);
+    return id ? { ...t, speaker_id: id } : t;
+  });
+}
+
 export function withSpeakerIds(sink: TranscriptSink, ids: SpeakerIds): TranscriptSink {
   return {
     publish(segment: TranscriptSegment) {
