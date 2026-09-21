@@ -35,7 +35,9 @@ async function nodeSide(): Promise<void> {
 
   check('gate: google_meet + avatar', wantsVirtualCamera({ platform: 'google_meet', defaultAvatarUrl: 'https://x/a.svg' }));
   check('gate: no avatar → off', !wantsVirtualCamera({ platform: 'google_meet' }));
-  check('gate: teams → off', !wantsVirtualCamera({ platform: 'teams', defaultAvatarUrl: 'https://x/a.svg' }));
+  check('gate: teams + avatar', wantsVirtualCamera({ platform: 'teams', defaultAvatarUrl: 'https://x/a.svg' }));
+  check('gate: zoom + avatar', wantsVirtualCamera({ platform: 'zoom', defaultAvatarUrl: 'https://x/a.svg' }));
+  check('gate: jitsi → off', !wantsVirtualCamera({ platform: 'jitsi', defaultAvatarUrl: 'https://x/a.svg' }));
 }
 
 /** Center + corner pixel of what the camera track shows, read back through a <video>. */
@@ -56,7 +58,14 @@ const PROBE = `(async () => {
   await sender.replaceTrack(other2);
   const swappedOnReplace = sender.track !== other2;
   pc.close();
-  return { hasCamera: devices.some((d) => d.kind === 'videoinput'), videoTracks: s.getVideoTracks().length,
+  // Teams light meetings: an audio-only connection must still offer a sending video line.
+  const pc2 = new RTCPeerConnection();
+  pc2.addTransceiver('audio', { direction: 'recvonly' });
+  const sdp = (await pc2.createOffer()).sdp;
+  pc2.close();
+  const videoLine = sdp.split('m=').find((m) => m.startsWith('video')) || '';
+  const offersVideo = /a=(sendrecv|sendonly)/.test(videoLine);
+  return { offersVideo, hasCamera: devices.some((d) => d.kind === 'videoinput'), videoTracks: s.getVideoTracks().length,
     size: [c.width, c.height], center: px(c.width / 2, c.height / 2), corner: px(5, 5), swappedOnAdd, swappedOnReplace };
 })()`;
 
@@ -64,7 +73,7 @@ const near = (rgb: number[], want: number[]): boolean => rgb.every((v, i) => Mat
 
 /** Launch a fresh headless Chromium with the init script for `avatar`, return PROBE's result
  *  (null = Chromium unavailable here → SKIP). */
-async function probe(avatar: string | null, url: string): Promise<Record<string, any> | null> {
+async function probe(avatar: string | null, url: string, platform = 'google_meet'): Promise<Record<string, any> | null> {
   const dataDir = mkdtempSync(join(tmpdir(), 'vexa-vcam-'));
   let context: BrowserContext;
   let page;
@@ -78,7 +87,7 @@ async function probe(avatar: string | null, url: string): Promise<Record<string,
     return null;
   }
   try {
-    await context.addInitScript(buildVirtualCameraInitScript(avatar));
+    await context.addInitScript(buildVirtualCameraInitScript(avatar, platform));
     await page.goto(url);
     return await page.evaluate(PROBE) as Record<string, any>;
   } finally {
@@ -102,6 +111,13 @@ async function browserSide(): Promise<void> {
     check('corner is the white background', near(r.corner, [255, 255, 255]), String(r.corner));
     check('addTrack swaps outgoing video for the canvas', r.swappedOnAdd === true);
     check('replaceTrack swaps outgoing video for the canvas', r.swappedOnReplace === true);
+
+    check('meet: no forced video line in an audio-only offer', r.offersVideo === false);
+    const t = await probe(avatar, url, 'teams');
+    if (t) {
+      check('teams: audio-only offer gets a sending video line (canvas)', t.offersVideo === true);
+      check('teams: camera tile still shows the avatar', near(t.center, [0, 76, 250]), String(t.center));
+    }
 
     const b = await probe(null, url);
     if (b) check('no avatar → blank white tile (not Chrome test pattern)', near(b.center, [255, 255, 255]), String(b.center));

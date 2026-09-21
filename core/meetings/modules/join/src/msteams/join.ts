@@ -20,6 +20,7 @@ import {
   isMicrosoftLoginUrl,
   meetingOriginHost,
 } from "./auth-redirect";
+import { ensureCameraOn } from "../shared/camera";
 
 // NOTE vs the monolith: the WebRTC remote-audio hook and the voice-agent
 // virtual-camera flow are RECORDING/HOST concerns and stay outside this brick.
@@ -198,8 +199,9 @@ export async function joinMicrosoftTeams(
   // We must configure all of these before clicking "Join now" in Step 6.
 
   log("Step 3: Camera handling...");
-  // Turn camera off to be unobtrusive
-  try {
+  if (botConfig.keepCameraOn) {
+    await ensureCameraOn(page, "teams");
+  } else try {
     const cameraButton = page.locator(teamsCameraButtonSelectors[0]);
     await cameraButton.waitFor({ timeout: 5000 });
     await cameraButton.click();

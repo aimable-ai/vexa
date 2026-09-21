@@ -5,7 +5,9 @@
  * getVirtualCameraInitScript), narrowed to what a static avatar needs:
  *   • a hidden canvas with the avatar drawn on it, kept emitting frames;
  *   • getUserMedia({video}) answers with the canvas track, enumerateDevices lists a camera;
- *   • addTrack / replaceTrack swap any outgoing video track for the canvas track.
+ *   • addTrack / replaceTrack swap any outgoing video track for the canvas track;
+ *   • Teams only: createOffer makes sure a send-capable video transceiver carries the canvas
+ *     (Teams light meetings otherwise offer m=video inactive and never publish the camera).
  * The RTCPeerConnection constructor is deliberately NOT replaced: the 0.12 Meet roster/audio
  * hook (installRemoteAudioHook) owns that; prototype patches coexist with it.
  *
@@ -13,9 +15,11 @@
  * cross-origin load (a CORS-less logo URL would taint the canvas / fail with crossOrigin set).
  */
 
-/** Only Google Meet: its join flow is the one taught to keep the camera on (join-driver). */
+/** Platforms whose join flow keeps the camera on for us (@vexa/join keepCameraOn). Not Jitsi. */
+const VIRTUAL_CAMERA_PLATFORMS = new Set(['google_meet', 'teams', 'zoom']);
+
 export function wantsVirtualCamera(inv: { platform: string; defaultAvatarUrl?: string }): boolean {
-  return inv.platform === 'google_meet' && !!inv.defaultAvatarUrl;
+  return VIRTUAL_CAMERA_PLATFORMS.has(inv.platform) && !!inv.defaultAvatarUrl;
 }
 
 const MAX_AVATAR_BYTES = 1_000_000;
@@ -47,7 +51,7 @@ export async function resolveAvatarDataUri(
 
 /** Page init script installing the virtual camera. `avatar` null → a blank tile (never Chrome's
  *  fake test pattern). Runs at document-start on every navigation; top frame only, once. */
-export function buildVirtualCameraInitScript(avatar: string | null): string {
+export function buildVirtualCameraInitScript(avatar: string | null, platform = 'google_meet'): string {
   return `(() => {
   if (window.top !== window || window.__vexa_vcam) return;
   window.__vexa_vcam = true;
@@ -106,6 +110,23 @@ export function buildVirtualCameraInitScript(avatar: string | null): string {
     RTCRtpSender.prototype.replaceTrack = function (t) {
       return replaceTrack.call(this, t && t.kind === 'video' && t.id !== track().id ? track() : t);
     };
+    if (${JSON.stringify(platform === 'teams')}) {
+      var createOffer = RTCPeerConnection.prototype.createOffer;
+      RTCPeerConnection.prototype.createOffer = async function () {
+        try {
+          var hasSender = false;
+          for (var t of this.getTransceivers()) {
+            var isVideo = (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || (t.sender.track && t.sender.track.kind === 'video');
+            if (!isVideo) continue;
+            if (t.direction === 'inactive' || t.direction === 'recvonly') t.direction = 'sendrecv';
+            if (!t.sender.track) await t.sender.replaceTrack(track());
+            hasSender = true;
+          }
+          if (!hasSender) this.addTransceiver(track(), { direction: 'sendrecv' });
+        } catch (e) { (window.logBot || console.error)('[vcam] createOffer hook failed: ' + e); }
+        return createOffer.apply(this, arguments);
+      };
+    }
     (window.logBot || console.log)('[vcam] virtual camera stream installed (avatar: ' + (src ? 'yes' : 'blank') + ')');
   } catch (e) {
     (window.logBot || console.error)('[vcam] install failed: ' + e);

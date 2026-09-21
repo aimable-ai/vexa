@@ -609,10 +609,10 @@ export async function launchBrowser(inv: Invocation): Promise<BrowserSession> {
 
   // Voice-agent gate the page reads to decide whether to keep the mic hot (production parity).
   await context.addInitScript(`window.__vexa_voice_agent_enabled = ${!!inv.voiceAgentEnabled};`);
-  // AIM-2050: the camera tile shows the avatar (Google Meet only; join keeps the camera on).
+  // AIM-2050/AIM-2065: the camera tile shows the avatar (Meet, Teams, Zoom; join keeps the camera on).
   if (wantsVirtualCamera(inv)) {
     const avatar = await resolveAvatarDataUri(inv.defaultAvatarUrl!);
-    await context.addInitScript(buildVirtualCameraInitScript(avatar)).catch((e: unknown) => {
+    await context.addInitScript(buildVirtualCameraInitScript(avatar, inv.platform)).catch((e: unknown) => {
       console.error(`[bot] virtual camera not installed: ${String(e)}`);
     });
   }
