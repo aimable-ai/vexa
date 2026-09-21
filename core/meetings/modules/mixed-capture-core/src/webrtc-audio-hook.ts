@@ -25,6 +25,9 @@ export interface WebRtcAudioHookOptions {
    *  lane that already captures the page's own <audio>/<video> elements (Google Meet): mirroring
    *  there would present every remote track twice to the element scan. */
   registryOnly?: boolean;
+  /** Called with each peer connection as it is constructed — before the page can open channels on
+   *  it — so another observer (the gmeet roster's data-channel listener) needs no second patch. */
+  onPeerConnection?: (pc: RTCPeerConnection) => void;
 }
 
 /** The shape a reader needs from one intercepted connection: its receivers. */
@@ -102,6 +105,7 @@ export function installRemoteAudioHook(opts: WebRtcAudioHookOptions = {}): boole
   function wrapPeerConnection(this: any, ...args: any[]) {
     const pc: RTCPeerConnection = new (OriginalPC as any)(...args);
     (win.__vexa_peer_connections as RTCPeerConnection[]).push(pc);
+    try { opts.onPeerConnection?.(pc); } catch (e: any) { log(`[Audio Hook] onPeerConnection error: ${e?.message || e}`); }
     if (opts.registryOnly) return pc;
     pc.addEventListener('track', handleTrack);
 

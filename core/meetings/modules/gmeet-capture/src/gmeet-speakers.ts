@@ -37,6 +37,9 @@ export interface GmeetSpeakersOptions {
    *  (the data-self-name marker can render late). Lets the channel binder pin a sticky
    *  self name it refuses to bind to any remote channel — the leak-proof backstop. */
   onSelf?: (name: string) => void;
+  /** The NON-self named tiles present now, as Meet participant id (`data-participant-id`) +
+   *  display name — reported whenever that set changes. */
+  onRoster?: (participants: { id: string; name: string }[]) => void;
   /** Log sink (defaults to console.log). */
   log?: (msg: string) => void;
   /** Poll interval (ms). Default 500. */
@@ -106,6 +109,7 @@ export function createGmeetSpeakers(opts: GmeetSpeakersOptions = {}): GmeetSpeak
   /** Names currently lit (non-self, named) — drives start/stop hint edges. */
   const speakingNow = new Set<string>();
   const reportedSelf = new Set<string>();   // self names already reported via onSelf (fire once each)
+  let reportedRoster = '';   // last roster reported via onRoster (change detection)
 
   // ── DOM reading ─────────────────────────────────────────────────
 
@@ -180,6 +184,12 @@ export function createGmeetSpeakers(opts: GmeetSpeakersOptions = {}): GmeetSpeak
         reportedSelf.add(t.name);
         try { opts.onSelf?.(t.name); } catch { /* consumer error */ }
       }
+    }
+    const roster = tiles.filter(t => !t.self && t.name).map(t => ({ id: t.id, name: t.name as string }));
+    const rosterKey = JSON.stringify(roster);
+    if (rosterKey !== reportedRoster) {
+      reportedRoster = rosterKey;
+      try { opts.onRoster?.(roster); } catch { /* consumer error */ }
     }
 
     // Currently-lit, non-self, named tiles.

@@ -84,6 +84,18 @@ async def test_ingest_persists_and_is_readable(store, bus):
     assert [s["text"] for s in doc["segments"]] == ["Hello", "world"]
 
 
+async def test_ingest_carries_speaker_id_to_the_transcript(store, bus):
+    await ingest(store, bus, _message(1, [
+        {"segment_id": "ch-0:1:a", "start": 1.0, "end": 2.0, "text": "Hi", "language": "en",
+         "speaker": "Alice", "speaker_id": "spaces/abc/devices/42", "completed": True},
+        {"segment_id": "ch-1:1:a", "start": 2.0, "end": 3.0, "text": "Hey", "language": "en",
+         "speaker": "Bob", "completed": True},
+    ]))
+    segs = (await store.get_transcript(7, "google_meet", "abc-defg-hij"))["segments"]
+    assert segs[0]["speaker_id"] == "spaces/abc/devices/42"
+    assert "speaker_id" not in segs[1]
+
+
 async def test_ingest_publishes_mutable_on_gateway_channel(store, bus):
     await ingest(store, bus, _message(1, [
         {"segment_id": "ch-0:1:a", "start": 1.0, "end": 2.5, "text": "Hello", "language": "en",

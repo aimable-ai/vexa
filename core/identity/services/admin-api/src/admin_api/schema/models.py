@@ -138,6 +138,7 @@ class Transcription(Base):
     end_time = Column(Float, nullable=False)
     text = Column(Text, nullable=False)
     speaker = Column(String(255), nullable=True)
+    speaker_id = Column(String(255), nullable=True)
     language = Column(String(10), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     session_uid = Column(String, nullable=True, index=True)
