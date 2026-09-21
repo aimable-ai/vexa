@@ -83,6 +83,7 @@ LOG_PROB_THRESHOLD = _env_float("LOG_PROB_THRESHOLD", -1.0)
 NO_SPEECH_THRESHOLD = _env_float("NO_SPEECH_THRESHOLD", 0.6)
 CONDITION_ON_PREVIOUS_TEXT = _env_bool("CONDITION_ON_PREVIOUS_TEXT", False)
 # Re-detect language per 30s window instead of once on the first window (mixed NL/EN meetings, AIM-949).
+# Only when the caller leaves the language open: faster-whisper's per-window detection overrides a requested one.
 MULTILINGUAL = _env_bool("MULTILINGUAL", True)
 PROMPT_RESET_ON_TEMPERATURE = _env_float("PROMPT_RESET_ON_TEMPERATURE", 0.3)
 REPETITION_PENALTY = _env_float("REPETITION_PENALTY", 1.1)
@@ -453,7 +454,7 @@ async def transcribe_audio(
                         "max_speech_duration_s": req_max_speech,
                     },
                     word_timestamps=want_word_timestamps,
-                    multilingual=MULTILINGUAL,
+                    multilingual=MULTILINGUAL and not language,
                 )
             
             segments_list, info = await asyncio.get_event_loop().run_in_executor(
