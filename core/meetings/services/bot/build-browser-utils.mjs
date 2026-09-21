@@ -64,6 +64,7 @@ const entryContents = `
 import {
   createGmeetCapture,
   createGmeetSpeakers,
+  createGmeetRoster,
   createGmeetCaptureV1,
   pickBoundName,
   GmeetChannelBinder,
@@ -96,6 +97,7 @@ const VexaBrowserUtils = {
   // ── gmeet lane (per-participant capture + glow attribution) ──
   createGmeetCapture,        // capture-bridge.ts: w.VexaBrowserUtils.createGmeetCapture
   createGmeetSpeakers,       // capture-bridge.ts: w.VexaBrowserUtils.createGmeetSpeakers (litNames())
+  createGmeetRoster,         // capture-bridge.ts init script: Meet's protocol roster (device ids, names, CSRC → participant)
   createGmeetCaptureV1,      // the v1 producer (source-bound glow name)
   pickBoundName,
   GmeetChannelBinder,

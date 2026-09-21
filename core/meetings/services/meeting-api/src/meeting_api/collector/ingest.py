@@ -98,6 +98,7 @@ def _coerce_segment(raw: dict) -> Optional[dict]:
         # name. Preserve it in the live hash so downstream policy can distinguish Teams CSRC rows
         # without parsing human labels or widening behavior for every source='merged' producer.
         "speaker_key": raw.get("speaker_key"),
+        "speaker_id": raw.get("speaker_id"),
         "completed": completed,
         # Live-engine drafts carry stable=True (text already model-committed): consumers act on
         # them before the segment closes, so the flag rides through to the mutable publish.

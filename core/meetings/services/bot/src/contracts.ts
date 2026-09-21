@@ -126,6 +126,8 @@ export interface TranscriptSegment {
   segment_id: string;
   speaker: string;
   speaker_key?: string;
+  /** The platform participant id behind `speaker` (Meet `data-participant-id`), when unambiguous. */
+  speaker_id?: string;
   text: string;
   start: number;
   end: number;

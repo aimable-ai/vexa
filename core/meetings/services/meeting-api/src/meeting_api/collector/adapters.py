@@ -226,7 +226,7 @@ def _segment_to_api(seg: dict) -> dict:
         "text": seg.get("text", ""),
         "language": seg.get("language"),
     }
-    for k in ("speaker", "speaker_key", "completed", "segment_id", "source", "absolute_start_time", "absolute_end_time", "created_at"):
+    for k in ("speaker", "speaker_key", "speaker_id", "completed", "segment_id", "source", "absolute_start_time", "absolute_end_time", "created_at"):
         if seg.get(k) is not None:
             out[k] = seg[k]
     return out
@@ -304,7 +304,7 @@ class SqlAlchemyTranscriptStore:
         for r in seg_rows:
             s = _segment_to_api({
                 "start": r.start_time, "end": r.end_time, "text": r.text,
-                "language": r.language, "speaker": r.speaker,
+                "language": r.language, "speaker": r.speaker, "speaker_id": r.speaker_id,
                 "segment_id": r.segment_id, "completed": True,
             })
             sid = s.get("segment_id") or f"pg-{len(order)}"
@@ -747,7 +747,7 @@ class SqlAlchemyTranscriptStore:
                 start, end = end, start
             rows.append({
                 "mid": int(meeting_id), "start": start, "end": end,
-                "text": seg.get("text") or "", "speaker": seg.get("speaker"),
+                "text": seg.get("text") or "", "speaker": seg.get("speaker"), "speaker_id": seg.get("speaker_id"),
                 "lang": seg.get("language"), "uid": seg.get("session_uid"),
                 "segid": str(sid), "created": _dt.utcnow(),
             })
@@ -757,10 +757,10 @@ class SqlAlchemyTranscriptStore:
             for row in rows:
                 await db.execute(
                     sql_text("""
-                        INSERT INTO transcriptions (meeting_id, start_time, end_time, text, speaker, language, session_uid, segment_id, created_at)
-                        VALUES (:mid, :start, :end, :text, :speaker, :lang, :uid, :segid, :created)
+                        INSERT INTO transcriptions (meeting_id, start_time, end_time, text, speaker, speaker_id, language, session_uid, segment_id, created_at)
+                        VALUES (:mid, :start, :end, :text, :speaker, :speaker_id, :lang, :uid, :segid, :created)
                         ON CONFLICT (meeting_id, segment_id) WHERE segment_id IS NOT NULL
-                        DO UPDATE SET text = EXCLUDED.text, speaker = EXCLUDED.speaker,
+                        DO UPDATE SET text = EXCLUDED.text, speaker = EXCLUDED.speaker, speaker_id = EXCLUDED.speaker_id,
                                       start_time = EXCLUDED.start_time, end_time = EXCLUDED.end_time,
                                       language = EXCLUDED.language, created_at = EXCLUDED.created_at
                     """),

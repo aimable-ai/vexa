@@ -107,6 +107,19 @@ const tile = (id: string, name: string, opts: { speaking?: boolean; self?: boole
   check('junk participant name is filtered (no hint)', hints.length === 0);
   sp.destroy();
 }
+{
+  // onRoster reports the non-self named tiles (id + name), only when that set changes.
+  const rosters: { id: string; name: string }[][] = [];
+  setDoc(e('body', {}, [ tile('me', 'Host', { self: true }), tile('p1', 'Alice'), tile('p2', 'Bob', { speaking: true }) ]));
+  const sp = createGmeetSpeakers({ pollMs: 10, onRoster: (r) => rosters.push(r) });
+  tick(); tick();
+  check('roster excludes self, reported once while unchanged',
+    rosters.length === 1 && JSON.stringify(rosters[0]) === JSON.stringify([{ id: 'p1', name: 'Alice' }, { id: 'p2', name: 'Bob' }]));
+  setDoc(e('body', {}, [ tile('p1', 'Alice') ]));   // Bob leaves
+  tick();
+  check('a change reports the new roster', rosters.length === 2 && JSON.stringify(rosters[1]) === JSON.stringify([{ id: 'p1', name: 'Alice' }]));
+  sp.destroy();
+}
 
 if (failed) { console.error(`\n❌ gmeet-speakers: ${failed} checks FAILED.`); process.exit(1); }
-console.log(`\n✅ gmeet-speakers: glow→START/END hint edges, self-tile suppression, junk-name filter pass. (DOM scraping is live-validated.)`);
+console.log(`\n✅ gmeet-speakers: glow→START/END hint edges, self-tile suppression, junk-name filter, participant ids pass. (DOM scraping is live-validated.)`);
