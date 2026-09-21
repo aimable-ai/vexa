@@ -38,17 +38,19 @@ export const VIRTUAL_CAMERA_LABEL = "Virtual Camera";
 export type CameraOnResult = "turned_on" | "already_on" | "not_found";
 
 export async function turnCameraOn(page: Page, timeoutMs: number): Promise<CameraOnResult> {
+  // Wait for whichever camera control shows first, so an already-on camera returns at once.
   const on = page.locator(CAMERA_TURN_ON_SELECTORS.join(", ")).first();
-  try {
-    await on.waitFor({ state: "visible", timeout: timeoutMs });
-    const label = await on.getAttribute("aria-label");
-    await on.click({ force: true });
-    log(`[camera] clicked "${label}" — camera on`);
-    return "turned_on";
-  } catch { /* no "turn on" control: maybe already on */ }
   const off = page.locator(CAMERA_TURN_OFF_SELECTORS.join(", ")).first();
-  if (await off.isVisible().catch(() => false)) return "already_on";
-  return "not_found";
+  try {
+    await on.or(off).first().waitFor({ state: "visible", timeout: timeoutMs });
+  } catch {
+    return "not_found";
+  }
+  if (!(await on.isVisible().catch(() => false))) return "already_on";
+  const label = await on.getAttribute("aria-label");
+  await on.click({ force: true });
+  log(`[camera] clicked "${label}" — camera on`);
+  return "turned_on";
 }
 
 /** Teams light meetings may expose only "Open video options": pick the virtual camera there. */

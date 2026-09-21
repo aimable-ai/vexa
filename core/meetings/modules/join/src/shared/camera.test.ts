@@ -22,17 +22,19 @@ const TEAMS_OPTIONS = `
   <button aria-label="Open video options" onclick="document.getElementById('menu').hidden=false">opts</button>
   <div id="menu" hidden><div role="menuitemradio" onclick="window.picked=this.textContent">${VIRTUAL_CAMERA_LABEL}</div></div>`;
 
-async function run(browser: Browser, html: string, platform: string) {
+async function run(browser: Browser, html: string, platform: string, timeoutMs = 800) {
   const page = await browser.newPage();
   await page.setContent(`<!doctype html><body>${html}</body>`);
-  const result = await ensureCameraOn(page, platform, 800);
+  const t0 = Date.now();
+  const result = await ensureCameraOn(page, platform, timeoutMs);
+  const ms = Date.now() - t0;
   const state = await page.evaluate(() => ({
     clicks: (window as any).clicks ?? 0,
     label: document.getElementById("cam")?.getAttribute("aria-label") ?? null,
     picked: (window as any).picked ?? null,
   }));
   await page.close();
-  return { result, ...state };
+  return { result, ms, ...state };
 }
 
 async function main(): Promise<void> {
@@ -56,8 +58,13 @@ async function main(): Promise<void> {
     const zoomMeeting = await run(browser, toggle("start my video", "stop my video"), "zoom");
     check(zoomMeeting.result === "turned_on", "zoom meeting: 'start my video' clicked", JSON.stringify(zoomMeeting));
 
-    const alreadyOn = await run(browser, toggle("Turn on camera", "Turn off camera", true), "google_meet");
+    const alreadyOn = await run(browser, toggle("Turn on camera", "Turn off camera", true), "google_meet", 5000);
     check(alreadyOn.result === "already_on" && alreadyOn.clicks === 0, "already on: nothing clicked", JSON.stringify(alreadyOn));
+    check(alreadyOn.ms < 1000, "already on: returns at once, not after the 5s timeout", `${alreadyOn.ms}ms`);
+
+    const late = `<script>setTimeout(() => document.body.insertAdjacentHTML("beforeend", ${JSON.stringify(toggle("Turn on video", "Turn off video"))}), 400)</script>`;
+    const lateBtn = await run(browser, late, "teams", 3000);
+    check(lateBtn.result === "turned_on", "control rendered late: still found and clicked", JSON.stringify(lateBtn));
 
     const light = await run(browser, TEAMS_OPTIONS, "teams");
     check(light.picked === VIRTUAL_CAMERA_LABEL && light.result === "turned_on", "teams light meeting: virtual camera picked in video options", JSON.stringify(light));
