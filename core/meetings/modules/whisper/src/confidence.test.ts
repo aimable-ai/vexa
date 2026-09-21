@@ -23,7 +23,7 @@ check("high compression ratio dropped", isLowConfidenceSegment({ compression_rat
 check("very low logprob dropped", isLowConfidenceSegment({ avg_logprob: -1.4 }) === true);
 
 // Boundaries (strict comparisons — the threshold itself is kept)
-check("logprob boundary -1.3 kept (strict <)", isLowConfidenceSegment({ avg_logprob: -1.3 }) === false);
+check("logprob boundary -1.0 kept (strict <, strict gates default)", isLowConfidenceSegment({ avg_logprob: -1.0 }) === false);
 check("compression boundary 2.4 kept (strict >)", isLowConfidenceSegment({ compression_ratio: 2.4 }) === false);
 
 if (failed) { console.error(`\n❌ confidence: ${failed} checks FAILED.`); process.exit(1); }
