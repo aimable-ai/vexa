@@ -330,12 +330,12 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
     ]);
 
     if (crashText) {
-      await emit('failed', { failure_stage: 'active', completion_reason: 'join_failure', reason: crashText, exit_code: 1 });
+      await emit('failed', { failure_stage: 'active', completion_reason: 'join_failure', reason: crashText, exit_code: 1, speaker_events: deps.pipeline.speakerEvents?.() });
       return { exitCode: 1, status: 'failed', completionReason: 'join_failure' };
     }
     console.error(`[bot] orchestrator: emitting completed (reason=${reason}, from=${cur})`);
     try {
-      await emit('completed', { completion_reason: reason, exit_code: 0 });
+      await emit('completed', { completion_reason: reason, exit_code: 0, speaker_events: deps.pipeline.speakerEvents?.() });
       console.error('[bot] orchestrator: completed emitted + flushed');
     } catch (e) {
       console.error(`[bot] orchestrator: completed emit THREW: ${String(e)}`);

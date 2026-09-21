@@ -54,7 +54,12 @@ export interface JoinDriver {
 export interface Pipeline {
   start(): Promise<void>;
   stop(): Promise<void>;
+  /** Who spoke when (epoch seconds), whether or not STT produced text — rides the terminal lifecycle
+   *  event so a post-meeting transcript can attribute every word. Lanes without a timeline omit it. */
+  speakerEvents?(): SpeakerEvent[];
 }
+
+export interface SpeakerEvent { speaker: string; start: number; end: number }
 
 /** transcript.v1 egress — the engine pushes speaker-attributed segments here; the real
  *  adapter publishes them to the redis stream / bus consumed by the collector. */

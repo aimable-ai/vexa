@@ -48,7 +48,11 @@ export interface GmeetPipeline {
   feedAudio(channel: number, glowName: string | undefined, pcm: Float32Array, tsMs: number): void;
   flush(): Promise<void>;
   dispose(): Promise<void>;
+  /** Who spoke when: every named channel-turn so far (epoch seconds), whether or not STT produced text. */
+  speakerTurns(): SpeakerTurn[];
 }
+
+export interface SpeakerTurn { speaker: string; start: number; end: number }
 
 export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
   const UNKNOWN = opts.unknownLabel ?? 'Speaker';
@@ -57,7 +61,11 @@ export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
   const mgr = new SpeakerStreamManager(opts.config);
   const inflight = new Set<Promise<void>>();
   // Per channel: the CURRENT turn's stream key, bound name, last-audio time, turn counter.
-  const chan = new Map<number, { key: string; name: string; lastMs: number; turn: number }>();
+  const chan = new Map<number, { key: string; name: string; startMs: number; lastMs: number; turn: number }>();
+  const turns: SpeakerTurn[] = [];
+  const recordTurn = (st: { name: string; startMs: number; lastMs: number }) => {
+    if (st.name !== UNKNOWN) turns.push({ speaker: st.name, start: st.startMs / 1000, end: st.lastMs / 1000 });
+  };
 
   // Emit the SEALED transcript.v1 shape (snake_case, segment_id + completed, source
   // in the contract's enum) — the pipeline IS the transcript.v1 producer, so its
@@ -106,7 +114,9 @@ export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
   const settle = async () => { while (inflight.size) await Promise.all([...inflight]); };
   // Close a finished turn: final-submit + emit (name is fixed on the key, so the late
   // transcribe can't be mislabeled), then free the stream after it has long settled.
-  const closeTurn = (key: string) => {
+  const closeTurn = (st: { key: string; name: string; startMs: number; lastMs: number }) => {
+    recordTurn(st);
+    const key = st.key;
     void mgr.flushSpeaker(key, true).catch(() => { /* nothing owed */ });
     const t = setTimeout(() => mgr.removeSpeaker(key), 12000);
     (t as { unref?: () => void }).unref?.();   // don't keep the process alive for cleanup
@@ -129,7 +139,7 @@ export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
         if (HOP_MERGE && glowName && glowName !== UNKNOWN) {
           const cont = [...chan.entries()].find(([c, o]) => c !== channel && o.name === glowName && tsMs - o.lastMs <= ONSET_GAP);
           if (cont) {
-            if (st && st !== cont[1]) closeTurn(st.key);
+            if (st && st !== cont[1]) closeTurn(st);
             st = cont[1];
             chan.set(channel, st);
             st.lastMs = tsMs;
@@ -141,11 +151,11 @@ export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
         // from the glow lit RIGHT NOW (fixed for the turn — held through overlap below).
         if (st) {
           const sharedElsewhere = [...chan.entries()].some(([c, o]) => c !== channel && o === st);
-          if (!sharedElsewhere) closeTurn(st.key);
+          if (!sharedElsewhere) closeTurn(st);
         }
         const turn = (st ? st.turn : 0) + 1;
         const key = `ch-${channel}:${turn}`;
-        st = { key, name: glowName || UNKNOWN, lastMs: tsMs, turn };
+        st = { key, name: glowName || UNKNOWN, startMs: tsMs, lastMs: tsMs, turn };
         chan.set(channel, st);
         mgr.addSpeaker(key, st.name);
       } else if (st.name === UNKNOWN && glowName) {
@@ -158,7 +168,9 @@ export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
       mgr.feedAudio(st.key, pcm, tsMs);
     },
     flush: async () => { for (const st of chan.values()) await mgr.flushSpeaker(st.key, true); await settle(); },
+    speakerTurns: () => turns.slice(),
     dispose: async () => {
+      for (const st of new Set(chan.values())) recordTurn(st);
       for (const st of chan.values()) await mgr.flushSpeaker(st.key, true);
       await settle();
       mgr.removeAll();

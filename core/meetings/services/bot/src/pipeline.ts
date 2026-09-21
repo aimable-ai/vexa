@@ -302,6 +302,7 @@ function createGmeetBotPipeline(
   return {
     async start() { /* lane is lazy — begins on the first fed frame */ },
     async stop() { await lane.dispose(); },
+    speakerEvents: () => lane.speakerTurns(),
     feedAudio: (channel, glowName, pcm, tsMs) => lane.feedAudio(channel, glowName, pcm, tsMs),
     feedMixedAudio() { /* not the gmeet lane */ },
     recordHint() { /* not the gmeet lane */ },
@@ -673,5 +674,6 @@ export function createLivePipeline(deps: LivePipelineDeps): Pipeline {
       if (sr) await sr().catch(() => { /* best-effort — flush the final chunk → master assembly */ });
       await engine.stop().catch(() => { /* best-effort; idempotent across double-stop */ });
     },
+    speakerEvents: () => engine.speakerEvents?.() ?? [],
   };
 }
