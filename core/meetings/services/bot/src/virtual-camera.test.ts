@@ -35,7 +35,7 @@ async function nodeSide(): Promise<void> {
 
   check('gate: google_meet + avatar', wantsVirtualCamera({ platform: 'google_meet', defaultAvatarUrl: 'https://x/a.svg' }));
   check('gate: no avatar → off', !wantsVirtualCamera({ platform: 'google_meet' }));
-  check('gate: teams + avatar', wantsVirtualCamera({ platform: 'teams', defaultAvatarUrl: 'https://x/a.svg' }));
+  check('gate: teams → off (AIM-2065: publishing video drops the Teams call)', !wantsVirtualCamera({ platform: 'teams', defaultAvatarUrl: 'https://x/a.svg' }));
   check('gate: zoom + avatar', wantsVirtualCamera({ platform: 'zoom', defaultAvatarUrl: 'https://x/a.svg' }));
   check('gate: jitsi → off', !wantsVirtualCamera({ platform: 'jitsi', defaultAvatarUrl: 'https://x/a.svg' }));
 }
@@ -73,7 +73,7 @@ const near = (rgb: number[], want: number[]): boolean => rgb.every((v, i) => Mat
 
 /** Launch a fresh headless Chromium with the init script for `avatar`, return PROBE's result
  *  (null = Chromium unavailable here → SKIP). */
-async function probe(avatar: string | null, url: string, platform = 'google_meet'): Promise<Record<string, any> | null> {
+async function probe(avatar: string | null, url: string): Promise<Record<string, any> | null> {
   const dataDir = mkdtempSync(join(tmpdir(), 'vexa-vcam-'));
   let context: BrowserContext;
   let page;
@@ -87,7 +87,7 @@ async function probe(avatar: string | null, url: string, platform = 'google_meet
     return null;
   }
   try {
-    await context.addInitScript(buildVirtualCameraInitScript(avatar, platform));
+    await context.addInitScript(buildVirtualCameraInitScript(avatar));
     await page.goto(url);
     return await page.evaluate(PROBE) as Record<string, any>;
   } finally {
@@ -113,12 +113,6 @@ async function browserSide(): Promise<void> {
     check('replaceTrack swaps outgoing video for the canvas', r.swappedOnReplace === true);
 
     check('meet: no forced video line in an audio-only offer', r.offersVideo === false);
-    const t = await probe(avatar, url, 'teams');
-    if (t) {
-      check('teams: no forced video line in an audio-only offer (Teams owns its transceivers)', t.offersVideo === false);
-      check('teams: camera tile still shows the avatar', near(t.center, [0, 76, 250]), String(t.center));
-    }
-
     const b = await probe(null, url);
     if (b) check('no avatar → blank white tile (not Chrome test pattern)', near(b.center, [255, 255, 255]), String(b.center));
   } finally {

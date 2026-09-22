@@ -15,8 +15,10 @@
  * cross-origin load (a CORS-less logo URL would taint the canvas / fail with crossOrigin set).
  */
 
-/** Platforms whose join flow keeps the camera on for us (@vexa/join keepCameraOn). Not Jitsi. */
-const VIRTUAL_CAMERA_PLATFORMS = new Set(['google_meet', 'teams', 'zoom']);
+/** Platforms whose join flow keeps the camera on for us (@vexa/join keepCameraOn). Not Jitsi, and not
+ *  Teams: publishing the canvas there makes Teams build an offer Chromium rejects (BUNDLE header-
+ *  extension id collision) and the call drops ~40 s after admission (AIM-2065, 2026-09-22). */
+const VIRTUAL_CAMERA_PLATFORMS = new Set(['google_meet', 'zoom']);
 
 export function wantsVirtualCamera(inv: { platform: string; defaultAvatarUrl?: string }): boolean {
   return VIRTUAL_CAMERA_PLATFORMS.has(inv.platform) && !!inv.defaultAvatarUrl;
@@ -51,7 +53,7 @@ export async function resolveAvatarDataUri(
 
 /** Page init script installing the virtual camera. `avatar` null → a blank tile (never Chrome's
  *  fake test pattern). Runs at document-start on every navigation; top frame only, once. */
-export function buildVirtualCameraInitScript(avatar: string | null, platform = 'google_meet'): string {
+export function buildVirtualCameraInitScript(avatar: string | null): string {
   return `(() => {
   if (window.top !== window || window.__vexa_vcam) return;
   window.__vexa_vcam = true;
@@ -110,10 +112,6 @@ export function buildVirtualCameraInitScript(avatar: string | null, platform = '
     RTCRtpSender.prototype.replaceTrack = function (t) {
       return replaceTrack.call(this, t && t.kind === 'video' && t.id !== track().id ? track() : t);
     };
-    // AIM-2065 follow-up: no Teams createOffer hook. Forcing a sendrecv video transceiver into
-    // Teams' offer broke its media agent ("Transceiver for modality=video is not found" →
-    // iceConnectionError, call dropped ~40 s after admission). Teams keeps its own transceivers;
-    // the avatar rides addTrack/replaceTrack only.
     (window.logBot || console.log)('[vcam] virtual camera stream installed (avatar: ' + (src ? 'yes' : 'blank') + ')');
   } catch (e) {
     (window.logBot || console.error)('[vcam] install failed: ' + e);
