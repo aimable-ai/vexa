@@ -115,7 +115,7 @@ async function browserSide(): Promise<void> {
     check('meet: no forced video line in an audio-only offer', r.offersVideo === false);
     const t = await probe(avatar, url, 'teams');
     if (t) {
-      check('teams: audio-only offer gets a sending video line (canvas)', t.offersVideo === true);
+      check('teams: no forced video line in an audio-only offer (Teams owns its transceivers)', t.offersVideo === false);
       check('teams: camera tile still shows the avatar', near(t.center, [0, 76, 250]), String(t.center));
     }
 

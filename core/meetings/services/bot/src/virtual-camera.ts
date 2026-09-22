@@ -110,23 +110,10 @@ export function buildVirtualCameraInitScript(avatar: string | null, platform = '
     RTCRtpSender.prototype.replaceTrack = function (t) {
       return replaceTrack.call(this, t && t.kind === 'video' && t.id !== track().id ? track() : t);
     };
-    if (${JSON.stringify(platform === 'teams')}) {
-      var createOffer = RTCPeerConnection.prototype.createOffer;
-      RTCPeerConnection.prototype.createOffer = async function () {
-        try {
-          var hasSender = false;
-          for (var t of this.getTransceivers()) {
-            var isVideo = (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') || (t.sender.track && t.sender.track.kind === 'video');
-            if (!isVideo) continue;
-            if (t.direction === 'inactive' || t.direction === 'recvonly') t.direction = 'sendrecv';
-            if (!t.sender.track) await t.sender.replaceTrack(track());
-            hasSender = true;
-          }
-          if (!hasSender) this.addTransceiver(track(), { direction: 'sendrecv' });
-        } catch (e) { (window.logBot || console.error)('[vcam] createOffer hook failed: ' + e); }
-        return createOffer.apply(this, arguments);
-      };
-    }
+    // AIM-2065 follow-up: no Teams createOffer hook. Forcing a sendrecv video transceiver into
+    // Teams' offer broke its media agent ("Transceiver for modality=video is not found" →
+    // iceConnectionError, call dropped ~40 s after admission). Teams keeps its own transceivers;
+    // the avatar rides addTrack/replaceTrack only.
     (window.logBot || console.log)('[vcam] virtual camera stream installed (avatar: ' + (src ? 'yes' : 'blank') + ')');
   } catch (e) {
     (window.logBot || console.error)('[vcam] install failed: ' + e);
