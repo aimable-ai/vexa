@@ -17,6 +17,7 @@ from meeting_api.bot_spawn import (
     build_invocation,
     build_router,
     build_workload_spec,
+    construct_meeting_url,
     mint_meeting_token,
     request_bot,
 )
@@ -992,3 +993,37 @@ async def test_spawn_threads_capture_signal_from_bot_context(monkeypatch, ctx, e
                       token_secret=SECRET)
     inv = json.loads(runtime.specs[0]["env"]["BOT_CONFIG"])
     assert inv["captureSignalEnabled"] is expected
+
+
+def test_construct_meeting_url_teams_short_link_keeps_passcode():
+    """AIM-2068: a short Teams link (`teams.microsoft.com/meet/<id>?p=…`) parses to a bare id.
+    Rebuilding that as a classic meetup-join lands on the Microsoft sign-in page
+    (`teams_auth_redirect` → join_failure), so a non-thread id is rebuilt as the short form,
+    passcode included. Classic thread ids keep the meetup-join form."""
+    assert construct_meeting_url("teams", "318491285355863", "7mnDnYXh4VZtPkf3QR") == (
+        "https://teams.microsoft.com/meet/318491285355863?p=7mnDnYXh4VZtPkf3QR"
+    )
+    assert construct_meeting_url("teams", "318491285355863") == (
+        "https://teams.microsoft.com/meet/318491285355863"
+    )
+    thread = "19:meeting_NzY4YWI2@thread.v2"
+    assert construct_meeting_url("teams", thread, "ignored") == (
+        f"https://teams.microsoft.com/l/meetup-join/{thread}"
+    )
+    assert construct_meeting_url("google_meet", "abc-defg-hij", "x") == "https://meet.google.com/abc-defg-hij"
+
+
+def test_spawn_teams_short_id_hands_bot_the_short_join_url(monkeypatch):
+    """The spawn path passes the request passcode into the constructed URL (AIM-2068)."""
+    monkeypatch.setenv("ADMIN_TOKEN", "test-admin-token")
+    repo = InMemoryMeetingRepo()
+    runtime = FakeRuntimeClient()
+    r = _client(repo, runtime).post("/bots", headers=HEADERS, json={
+        "platform": "teams", "native_meeting_id": "318491285355863", "passcode": "7mnDnYXh4VZtPkf3QR",
+    })
+    assert r.status_code == 201, r.text
+    assert r.json()["constructed_meeting_url"] == (
+        "https://teams.microsoft.com/meet/318491285355863?p=7mnDnYXh4VZtPkf3QR"
+    )
+    inv = json.loads(runtime.specs[0]["env"]["BOT_CONFIG"])
+    assert inv["meetingUrl"] == "https://teams.microsoft.com/meet/318491285355863?p=7mnDnYXh4VZtPkf3QR"

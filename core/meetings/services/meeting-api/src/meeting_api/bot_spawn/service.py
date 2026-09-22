@@ -24,8 +24,10 @@ The flow (parent ``meetings.py`` lines ~1010-1403, reduced to the standard-bot b
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from typing import Any, Optional
+from urllib.parse import quote
 
 from ..config_preflight import CONFIG_FAULT_KINDS, cached_probe_verdict
 from ..obs import log_event
@@ -111,6 +113,9 @@ _URL_TEMPLATES = {
     "teams": "https://teams.microsoft.com/l/meetup-join/{native_meeting_id}",
 }
 
+# Classic Teams deep-link id; anything else is a short-link id (see ``construct_meeting_url``).
+_TEAMS_THREAD_ID = re.compile(r"^19:meeting_[^@\s/]+@thread\.v2$", re.IGNORECASE)
+
 
 async def _fetch_bot_context(user_id: int) -> dict:
     """The whole per-user spawn context from admin-api (``/internal/users/{id}/bot-context``).
@@ -161,9 +166,18 @@ def _capture_signal_from_context(ctx: dict) -> bool:
     return ctx.get("capture_signal") is not False
 
 
-def construct_meeting_url(platform: str, native_meeting_id: str) -> Optional[str]:
+def construct_meeting_url(
+    platform: str, native_meeting_id: str, passcode: Optional[str] = None
+) -> Optional[str]:
     """Best-effort meeting URL for ``(platform, native_id)`` (zoom needs more than the id →
-    None; the caller may pass an explicit ``meeting_url`` instead)."""
+    None; the caller may pass an explicit ``meeting_url`` instead).
+
+    Teams: a ``19:meeting_…@thread.v2`` id is a classic deep link (``/l/meetup-join/``); a bare id
+    came from a short link (``/meet/<id>?p=<passcode>``) and must be rebuilt as one — a meetup-join
+    with a bare id lands on the Microsoft sign-in page (``teams_auth_redirect``, AIM-2068)."""
+    if platform == "teams" and not _TEAMS_THREAD_ID.match(native_meeting_id):
+        url = f"https://teams.microsoft.com/meet/{native_meeting_id}"
+        return f"{url}?p={quote(passcode, safe='')}" if passcode else url
     tmpl = _URL_TEMPLATES.get(platform)
     return tmpl.format(native_meeting_id=native_meeting_id) if tmpl else None
 
@@ -307,7 +321,7 @@ async def request_bot(
     """
     authority = authority or AllowAllServiceAuthority()
     # 1. URL.
-    constructed_url = meeting_url or construct_meeting_url(platform, native_meeting_id)
+    constructed_url = meeting_url or construct_meeting_url(platform, native_meeting_id, passcode)
 
     # 1b. Resolve the transcription backend and gate BEFORE any DB write (C1, reorder not
     #     duplicate): the old router gate refused pre-insert; resolving here keeps that property —
