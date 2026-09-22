@@ -32,8 +32,9 @@ pactl load-module module-null-sink sink_name=tts_sink \
 pactl load-module module-remap-source master=tts_sink.monitor source_name=virtual_mic \
   source_properties=device.description="VirtualMicrophone" 2>/dev/null || true
 pactl set-default-source virtual_mic 2>/dev/null || true
+# Only the sink is muted: a muted SOURCE delivers no frames, and Google Meet then flags
+# "Microphone problem" and hides its mute toggle, so the bot joins unmuted (AIM-2069).
 pactl set-sink-mute tts_sink 1 2>/dev/null || true
-pactl set-source-mute virtual_mic 1 2>/dev/null || true
 
 # Run the worker from its package dir so the schema path (src→../../../contracts)
 # and the pnpm-linked workspace deps resolve. Always emit start + exit breadcrumbs
