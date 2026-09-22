@@ -612,7 +612,7 @@ export async function launchBrowser(inv: Invocation): Promise<BrowserSession> {
   // AIM-2050/AIM-2065: the camera tile shows the avatar (Meet, Teams, Zoom; join keeps the camera on).
   if (wantsVirtualCamera(inv)) {
     const avatar = await resolveAvatarDataUri(inv.defaultAvatarUrl!);
-    await context.addInitScript(buildVirtualCameraInitScript(avatar, inv.platform)).catch((e: unknown) => {
+    await context.addInitScript(buildVirtualCameraInitScript(avatar)).catch((e: unknown) => {
       console.error(`[bot] virtual camera not installed: ${String(e)}`);
     });
   }
