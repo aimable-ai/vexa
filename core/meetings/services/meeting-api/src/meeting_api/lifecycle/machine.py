@@ -21,9 +21,6 @@ from typing import Any, Dict, List, Optional
 # Cap forensics so a runaway ring-buffer can't bloat meeting.data (parent callbacks.py caps
 # bot_logs at 50 KiB, trimming the OLDEST lines first). 50 * 1024 bytes.
 _BOT_LOGS_BYTE_BUDGET = 50 * 1024
-# The bot's participant list is untrusted input: bound entries and string lengths.
-_MAX_PARTICIPANTS = 200
-_MAX_PARTICIPANT_FIELD_CHARS = 200
 
 
 class BotStatus(str, Enum):
@@ -197,22 +194,6 @@ def _trim_bot_logs(lines: List[str]) -> tuple[List[str], bool]:
     return list(reversed(kept)), False
 
 
-def _bound_participants(raw: Any) -> List[Dict[str, str]]:
-    """The bot's `participants` ({name, id?}) keeping only well-formed entries, bounded."""
-    out: List[Dict[str, str]] = []
-    for p in raw if isinstance(raw, list) else []:
-        name = p.get("name") if isinstance(p, dict) else None
-        if not isinstance(name, str) or not name.strip():
-            continue
-        entry = {"name": name.strip()[:_MAX_PARTICIPANT_FIELD_CHARS]}
-        if isinstance(p.get("id"), str) and p["id"]:
-            entry["id"] = p["id"][:_MAX_PARTICIPANT_FIELD_CHARS]
-        out.append(entry)
-        if len(out) == _MAX_PARTICIPANTS:
-            break
-    return out
-
-
 class IllegalTransition(Exception):
     """Raised when a lifecycle event would drive an illegal FSM transition.
 
@@ -265,8 +246,8 @@ class MeetingRecord:
     #: Who spoke when ({speaker, start, end}, epoch seconds), reported by the bot on the terminal
     #: event whether or not STT produced text — lets a post-meeting transcript attribute every word.
     speaker_events: Optional[List[Dict[str, Any]]] = None
-    #: Who was in the meeting ({name, id?}), reported by the bot on the terminal event.
-    participants: Optional[List[Dict[str, str]]] = None
+    #: Who was in the meeting (display names), reported by the bot on the terminal event.
+    participants: Optional[List[str]] = None
     # User intent (parent's `meeting.data.stop_requested`) — set by the DELETE/stop path, read
     # first by the exit classifier so a user stop is never mis-attributed as a failure.
     stop_requested: bool = False
@@ -535,9 +516,9 @@ class LifecycleSink:
                 rec.stt_fault = dict(event["stt_fault"])
             if event.get("speaker_events"):
                 rec.speaker_events = [dict(e) for e in event["speaker_events"]]
-            participants = _bound_participants(event.get("participants"))
-            if participants:
-                rec.participants = participants
+            if isinstance(event.get("participants"), list):
+                names = [p[:200] for p in event["participants"] if isinstance(p, str) and p]
+                rec.participants = names[:200] or None
 
         rec.status = to
         rec.history.append(to)

@@ -100,7 +100,7 @@ async function main(): Promise<void> {
   // ── AIM-2073: the pipeline's participant list rides the terminal event, schema-valid ──
   {
     const lc = recordingSink();
-    const participants = [{ name: 'Joost van Bruggen | MavenBlue', id: 'spaces/x/devices/1' }, { name: 'Anna' }];
+    const participants = ['Joost van Bruggen | MavenBlue', 'Anna'];
     let fireLeave: (a: { action: 'leave' }) => void = () => {};
     const o = createOrchestrator(inv(), {
       lifecycle: lc, join: mockJoin('admitted'), pipeline: { ...noopPipeline(), participants: () => participants },

@@ -263,8 +263,7 @@ def test_terminal_event_persists_speaker_events():
 
 def test_terminal_event_persists_participants():
     """AIM-2073: who was in the meeting rides the terminal event into meeting.data and the webhook."""
-    participants = [{"name": "Joost van Bruggen | MavenBlue", "id": "spaces/x/devices/1"},
-                    {"name": "Anna de Vries"}]
+    participants = ["Joost van Bruggen | MavenBlue", "Anna de Vries"]
     terminal = {
         "connection_id": "sess-uid", "status": "completed", "exit_code": 0,
         "completion_reason": "left_alone", "participants": participants,
@@ -278,9 +277,8 @@ def test_terminal_event_persists_participants():
 
 
 def test_terminal_participants_are_bounded():
-    """Untrusted input: malformed entries dropped, at most 200 entries, fields at most 200 chars."""
-    raw = [{"name": "x" * 500, "id": "i" * 500}, {"name": "  "}, {"id": "no-name"}, "Alice", {"name": 7}]
-    raw += [{"name": f"P{i}"} for i in range(300)]
+    """Untrusted input: non-strings and empty names dropped, at most 200 names of at most 200 chars."""
+    raw = ["x" * 500, "", {"name": "Alice"}, 7] + [f"P{i}" for i in range(300)]
     client, app, deliveries = _client()
     final = _drive(client, JOINING, ACTIVE, {
         "connection_id": "sess-uid", "status": "completed", "exit_code": 0,
@@ -288,15 +286,15 @@ def test_terminal_participants_are_bounded():
     })[-1]
     kept = final["data"]["participants"]
     assert len(kept) == 200
-    assert kept[0] == {"name": "x" * 200, "id": "i" * 200}
-    assert kept[1] == {"name": "P0"}
+    assert kept[0] == "x" * 200
+    assert kept[1] == "P0"
 
 
 def test_no_participants_leaves_data_unchanged():
     client, app, deliveries = _client()
     final = _drive(client, JOINING, ACTIVE, {
         "connection_id": "sess-uid", "status": "completed", "exit_code": 0,
-        "completion_reason": "stopped", "participants": [{"name": ""}],
+        "completion_reason": "stopped", "participants": [""],
     })[-1]
     assert "participants" not in final["data"]
 

@@ -214,7 +214,6 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   // that no longer exists by then.
   const snapshot = signalRecorder ? wrapTranscriptWithSnapshot<TranscriptSegment, TranscriptSink>(liveTranscript, signalRecorder.transcriptPath) : null;
   const speakerIds = createSpeakerIds(inv.botName);
-  const participantNames = (): string[] => speakerIds.participants().map((p) => p.name);
   const transcript: TranscriptSink = withSpeakerIds(snapshot ?? liveTranscript, speakerIds);
   // Counts STT failures across the meeting so the terminal lifecycle event can carry WHY a
   // transcript is short or empty, instead of leaving it indistinguishable from a silent room.
@@ -234,8 +233,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
       // Chunked-whisper lane only: an injected transcribe pins that lane, and a live engine (voxtral/
       // reson8) has no batch round-trip to tap — passing one would silently demote it to chunked.
       transcribe: signalRecorder && !liveEngineForUrl(inv.transcribeEnabled === false ? undefined : inv.transcriptionServiceUrl)
-        ? wrapTranscribeWithTap(createTranscribe(inv, participantNames), signalRecorder.path) : undefined,
-      participantNames,
+        ? wrapTranscribeWithTap(createTranscribe(inv, speakerIds.participants), signalRecorder.path) : undefined,
+      participantNames: speakerIds.participants,
       config: speakerStreamConfig,
       // Every STT fault is counted and carried out on the terminal lifecycle event (see
       // sttFaults). Logging it here as well keeps the raw line for anyone tailing the container.
@@ -291,7 +290,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     pipeline = {
       ...live,
       speakerEvents: () => turnsWithSpeakerIds(live.speakerEvents?.() ?? [], speakerIds),
-      participants: () => speakerIds.participants(),
+      participants: speakerIds.participants,
     };
     // Voice: tee acts so `speak`/`speak_stop` reach the SpeakController (gated on voiceAgentEnabled).
     const speak = createSpeakController(session.page, inv);

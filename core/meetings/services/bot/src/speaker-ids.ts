@@ -10,7 +10,7 @@
  * Whisper hint words while live, and the terminal lifecycle event's `participants`.
  */
 import type { TranscriptSegment } from './contracts.js';
-import type { Participant, SpeakerEvent, TranscriptSink } from './ports.js';
+import type { SpeakerEvent, TranscriptSink } from './ports.js';
 
 export interface SpeakerIds {
   recordRoster(participants: { id: string; name: string }[]): void;
@@ -18,7 +18,7 @@ export interface SpeakerIds {
   recordName(name: string): void;
   idFor(name: string): string | undefined;
   /** Everyone seen in the meeting, first-seen order; the bot and placeholder names excluded. */
-  participants(): Participant[];
+  participants(): string[];
 }
 
 /** Platform labels for a participant with no usable name. */
@@ -30,20 +30,18 @@ export const bareName = (name: string): string => name.split(/ \| | \(/)[0].trim
 export function createSpeakerIds(selfName?: string): SpeakerIds {
   const idByName = new Map<string, string>();
   const ambiguous = new Set<string>();
-  const seen = new Map<string, Participant>();
+  const seen = new Set<string>();
   const self = bareName(selfName ?? '').toLowerCase();
-  const see = (raw: unknown, id?: string): void => {
+  const see = (raw: unknown): void => {
     const name = typeof raw === 'string' ? raw.trim() : '';
     if (!name || PLACEHOLDER_NAME.test(name) || (self && bareName(name).toLowerCase() === self)) return;
-    const p = seen.get(name) ?? { name };
-    if (id) p.id = id;
-    seen.set(name, p);
+    seen.add(name);
   };
   return {
     recordRoster(participants) {
-      for (const { id, name } of participants) see(name, id);
       const idsByName = new Map<string, Set<string>>();
       for (const { id, name } of participants) {
+        see(name);
         if (!idsByName.has(name)) idsByName.set(name, new Set());
         idsByName.get(name)!.add(id);
       }
@@ -53,11 +51,11 @@ export function createSpeakerIds(selfName?: string): SpeakerIds {
         else idByName.set(name, [...ids][0]);
       }
     },
-    recordName: (name) => see(name),
+    recordName: see,
     idFor(name) {
       return ambiguous.has(name) ? undefined : idByName.get(name);
     },
-    participants: () => [...seen.values()].map((p) => ({ ...p })),
+    participants: () => [...seen],
   };
 }
 

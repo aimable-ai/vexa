@@ -65,9 +65,8 @@ const check = (name: string, cond: boolean) => { console.log(`  ${cond ? '✅' :
   ids.recordRoster([{ id: 'p3', name: 'Joost van Bruggen | MavenBlue' }]);
   const list = ids.participants();
   check('participants: bot and placeholders excluded, suffix kept, deduped, first-seen order',
-    JSON.stringify(list) === JSON.stringify([{ name: 'Joost van Bruggen | MavenBlue', id: 'p3' }, { name: 'Anna de Vries (Bolsius)' }]));
-  list[0].name = 'mutated';
-  check('participants() returns copies', ids.participants()[0].name === 'Joost van Bruggen | MavenBlue');
+    JSON.stringify(list) === JSON.stringify(['Joost van Bruggen | MavenBlue', 'Anna de Vries (Bolsius)']));
+  check('the roster still resolves speaker ids', ids.idFor('Joost van Bruggen | MavenBlue') === 'p3');
   const noBot = createSpeakerIds();
   noBot.recordName('Aimable Notetaker');
   check('no bot name → nobody excluded as the bot', noBot.participants().length === 1);
