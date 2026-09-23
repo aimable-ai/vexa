@@ -28,10 +28,16 @@ const opensInEnglish = () => {
 {
   const l = opensInEnglish();
   l.shouldDrop(nl);
-  l.shouldDrop(nl);
-  check("third confident window in another language re-locks and is kept", l.shouldDrop(nl) === false);
+  l.shouldDrop({ ...nl, dur: 2.5 });
+  check("third distinct confident window in another language re-locks and is kept", l.shouldDrop({ ...nl, dur: 3 }) === false);
   check("after re-lock the new language passes", l.shouldDrop(nl) === false);
   check("after re-lock a short window in the old language is dropped", l.shouldDrop({ ...en, dur: 1.5 }) === true);
+}
+{
+  const l = opensInEnglish();
+  const odd = { detected: "is", prob: 0.97, dur: 7.6, words: 18 };
+  for (let i = 0; i < 3; i++) l.shouldDrop(odd);
+  check("one window resubmitted unchanged counts once (no re-lock)", l.shouldDrop({ ...en, dur: 1.5 }) === false);
 }
 {
   const l = opensInEnglish();
@@ -41,9 +47,9 @@ const opensInEnglish = () => {
 {
   const l = opensInEnglish();
   l.shouldDrop(nl);
-  l.shouldDrop(nl);
+  l.shouldDrop({ ...nl, dur: 2.5 });
   l.shouldDrop(en); // a window in the locked language breaks the streak
-  check("streak resets on a window in the locked language", l.shouldDrop(nl) === true);
+  check("streak resets on a window in the locked language", l.shouldDrop({ ...nl, dur: 3 }) === true);
 }
 {
   const l = new LanguageLock();

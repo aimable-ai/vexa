@@ -1,12 +1,11 @@
 /**
  * Session language lock for the live Whisper lane (WHISPER_LANG_LOCK=auto (default) | <code> | off).
  *
- * A SHORT window decoded in another language than the session's is usually a mis-detection
- * ("Tá bom", "C'est lui") — drop it. Long windows in another language are kept. auto = lock on the
- * majority of the first 40 words, then RE-LOCK when several consecutive confident windows agree on
- * another language: a meeting that opens with English small talk and continues in Dutch must not
- * drop its Dutch for the rest of the call (meeting 191, 2026-09-22: 69 Dutch windows dropped).
- * Phantoms are short and unsure (prob 0.3–0.6, <0.2 s); real speech is prob ≥0.9, ≥1 s.
+ * A short window decoded in another language than the session's is usually a mis-detection
+ * ("Tá bom") and is dropped; long windows are kept. auto locks on the majority language of the first
+ * 40 words and re-locks after WHISPER_LANG_RELOCK_WINDOWS distinct confident windows (prob and length
+ * above the _MIN_PROB / _MIN_SEC floors) agree on another language, so a meeting that switches
+ * language keeps being transcribed. Phantoms are short and unsure, so they never count.
  */
 import { log } from './log.js';
 
@@ -33,6 +32,7 @@ export class LanguageLock {
   private auto: string | undefined;
   private streakLang: string | undefined;
   private streak = 0;
+  private lastCounted = '';
 
   /** True when the window must be dropped. `requested` = the meeting's explicit language, if any. */
   shouldDrop(w: LockWindow, requested?: string): boolean {
@@ -52,15 +52,22 @@ export class LanguageLock {
     }
     if (!lock || detected === lock) {
       this.streak = 0;
+      this.lastCounted = '';
       return false;
     }
     if (auto && this.relockWindows > 0 && w.prob >= this.relockMinProb && w.dur >= this.relockMinSec && w.words > 0) {
-      this.streak = this.streakLang === detected ? this.streak + 1 : 1;
-      this.streakLang = detected;
+      // The same audio resubmitted (same length, same words) is one piece of evidence.
+      const sig = `${detected}|${w.dur.toFixed(1)}|${w.words}`;
+      if (sig !== this.lastCounted) {
+        this.streak = this.streakLang === detected ? this.streak + 1 : 1;
+        this.streakLang = detected;
+        this.lastCounted = sig;
+      }
       if (this.streak >= this.relockWindows) {
         log(`[STT] language re-locked ${lock} -> ${detected} after ${this.streak} confident windows`);
         this.auto = lock = detected;
         this.streak = 0;
+        this.lastCounted = '';
         return false;
       }
     }
