@@ -42,6 +42,7 @@ HEAVY_DATA = {
     "scheduled_at": "2026-08-20T10:00:00Z",
     # heavy detail keys the LIST must never ship (the outage cause)
     "speaker_events": [{"i": i, "t": "x" * 64} for i in range(2000)],   # the ~3 MB-class key
+    "participants": ["Joost van Bruggen"],
     "bot_logs": ["log-line " * 8] * 2000,
     "recordings": [{"id": "r1", "url": "s3://…"}],
     "status_transition": [{"to": "active"}],
@@ -64,7 +65,7 @@ HEAVY_DATA = {
     }],
 }
 
-HEAVY_KEYS = ("speaker_events", "bot_logs", "recordings", "status_transition",
+HEAVY_KEYS = ("speaker_events", "participants", "bot_logs", "recordings", "status_transition",
               "chat_messages", "error_details", "last_error")
 
 

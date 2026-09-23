@@ -16,7 +16,7 @@ import addFormats from 'ajv-formats';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createBotPipeline, createTranscribe } from './pipeline.js';
+import { createBotPipeline, createTranscribe, participantHint } from './pipeline.js';
 import type { Invocation } from './config.js';
 import type { TranscriptSegment } from './contracts.js';
 import type { TranscriptSink } from './ports.js';
@@ -169,6 +169,38 @@ async function main(): Promise<void> {
     check('initialPrompt leads, context follows', promptParts[0] === 'Aimable, Bolsius, Roundtable zo gezegd.', JSON.stringify(promptParts[0]));
     check('initialPrompt alone when no context', promptParts[1] === 'Aimable, Bolsius, Roundtable', JSON.stringify(promptParts[1]));
     check('no initialPrompt → context alone (wire unchanged)', promptParts[2] === 'zo gezegd.', JSON.stringify(promptParts[2]));
+  }
+
+  // ── 4c) AIM-2073: participant names ride between the bias and the context (Whisper keeps the END);
+  //     read per call so a late joiner reaches the next window; no names → the prompt is unchanged. ──
+  {
+    const realFetch = globalThis.fetch;
+    const promptParts: Array<string | null> = [];
+    (globalThis as any).fetch = async (_url: unknown, init: { body: Buffer }) => {
+      const m = Buffer.from(init.body).toString('latin1').match(/name="prompt"\r\n\r\n([^\r]*)\r\n/);
+      promptParts.push(m ? m[1] : null);
+      return new Response(JSON.stringify({ text: '', language: 'en', duration: 0.1, segments: [] }), { status: 200 });
+    };
+    const pcm = new Float32Array(1600).fill(0.05);
+    const names: string[] = [];
+    const t = createTranscribe(baseInv({ transcriptionServiceUrl: 'http://stt.test', initialPrompt: 'Aimable, Bolsius' }), () => names);
+    await t(pcm, 'zo gezegd.');
+    names.push('Joost van Bruggen | MavenBlue', 'Ludger Visser');
+    await t(pcm, 'zo gezegd.');
+    await t(pcm);
+    await createTranscribe(baseInv({ transcriptionServiceUrl: 'http://stt.test' }), () => ['Ludger Visser'])(pcm, 'zo gezegd.');
+    (globalThis as any).fetch = realFetch;
+    check('no names yet → prompt unchanged', promptParts[0] === 'Aimable, Bolsius zo gezegd.', JSON.stringify(promptParts[0]));
+    check('names after the bias, before the context', promptParts[1] === 'Aimable, Bolsius Joost van Bruggen, Ludger Visser zo gezegd.', JSON.stringify(promptParts[1]));
+    check('names close the prompt when there is no context', promptParts[2] === 'Aimable, Bolsius Joost van Bruggen, Ludger Visser', JSON.stringify(promptParts[2]));
+    check('names without a bias lead the prompt', promptParts[3] === 'Ludger Visser zo gezegd.', JSON.stringify(promptParts[3]));
+
+    check('hint strips the organisation suffix and dedupes',
+      participantHint(['Joost van Bruggen | MavenBlue', 'Joost van Bruggen', 'Anna de Vries (Bolsius)']) === 'Joost van Bruggen, Anna de Vries');
+    check('hint with no names is undefined', participantHint([]) === undefined);
+    const many = Array.from({ length: 40 }, (_, i) => `Participant Number ${String(i).padStart(2, '0')}`);
+    const capped = participantHint(many) ?? '';
+    check('hint is capped at 300 chars of whole names, roster order', capped.length <= 300 && capped.startsWith('Participant Number 00, ') && capped.endsWith(many[capped.split(', ').length - 1]), capped);
   }
 
   // ── 5) LEGACY MIXED LANE (Zoom/Jitsi) speaker-label boundary (#890): a turn the lane has NOT

@@ -27,6 +27,7 @@ from typing import Any, Dict, Optional
 # below. Full ``data`` stays on ``GET /meetings/{id}``.
 LIST_OMIT_KEYS = frozenset({
     "speaker_events",
+    "participants",
     "bot_logs",
     "recordings",
     "status_transition",

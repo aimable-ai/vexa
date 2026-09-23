@@ -727,7 +727,8 @@ export async function startCaptureBridge(
   onChat?: (sender: string, text: string) => void,
   /** Active-phase silence signal. It remains unavailable until page capture reports ready. */
   activity?: RemoteAudioActivityTap,
-  /** gmeet: roster snapshots (participant id + name) cross here to resolve segment speaker ids. */
+  /** Roster names cross here: gmeet snapshots (id + name) resolve segment speaker ids; Teams tile
+   *  names only join the participant list. */
   speakerIds?: SpeakerIds,
 ): Promise<() => Promise<void>> {
   const mixed = isMixedLanePlatform(inv.platform);
@@ -788,7 +789,7 @@ export async function startCaptureBridge(
   // Node-side ones (the caption-enable outcome) call this sink directly.
   const { sink: onObservation, crossed: obsBridgeCrossed } = makeObservationSink(
     lane, telemetry, undefined,
-    mixed ? (name, tMs) => pipeline.recordRosterName?.(name, tMs) : undefined,
+    mixed ? (name, tMs) => { speakerIds?.recordName(name); pipeline.recordRosterName?.(name, tMs); } : undefined,
     mixed ? (named, participants, tMs) => pipeline.recordRosterCoverage?.(named, participants, tMs) : undefined,
   );
   // C1: the four hint hops on one periodic, cumulative counter line —

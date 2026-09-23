@@ -48,5 +48,29 @@ const check = (name: string, cond: boolean) => { console.log(`  ${cond ? '✅' :
   check('an unresolvable speaker turn is not stamped', !('speaker_id' in turns[1]));
 }
 
+{
+  // AIM-2073: the participant list — first-seen order, full names as seen, bot + placeholders out.
+  const ids = createSpeakerIds('Aimable Notetaker');
+  ids.recordRoster([
+    { id: 'p1', name: 'Joost van Bruggen | MavenBlue' },
+    { id: 'p0', name: 'Aimable Notetaker' },
+    { id: 'p2', name: 'Google Participant (spaces/abc/devices/2)' },
+  ]);
+  ids.recordName('Aimable Notetaker (Guest)');
+  ids.recordName('Teams Participant (8a1f)');
+  ids.recordName('Unknown');
+  ids.recordName('Speaker 2');
+  ids.recordName('  ');
+  ids.recordName('Anna de Vries (Bolsius)');
+  ids.recordRoster([{ id: 'p3', name: 'Joost van Bruggen | MavenBlue' }]);
+  const list = ids.participants();
+  check('participants: bot and placeholders excluded, suffix kept, deduped, first-seen order',
+    JSON.stringify(list) === JSON.stringify(['Joost van Bruggen | MavenBlue', 'Anna de Vries (Bolsius)']));
+  check('the roster still resolves speaker ids', ids.idFor('Joost van Bruggen | MavenBlue') === 'p3');
+  const noBot = createSpeakerIds();
+  noBot.recordName('Aimable Notetaker');
+  check('no bot name → nobody excluded as the bot', noBot.participants().length === 1);
+}
+
 if (failed) { console.error(`\n❌ speaker-ids: ${failed} checks FAILED.`); process.exit(1); }
 console.log('\n✅ speaker-ids: roster → id resolution and segment stamping pass.');

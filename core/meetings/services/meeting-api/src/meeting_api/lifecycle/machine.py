@@ -246,6 +246,8 @@ class MeetingRecord:
     #: Who spoke when ({speaker, start, end}, epoch seconds), reported by the bot on the terminal
     #: event whether or not STT produced text — lets a post-meeting transcript attribute every word.
     speaker_events: Optional[List[Dict[str, Any]]] = None
+    #: Who was in the meeting (display names), reported by the bot on the terminal event.
+    participants: Optional[List[str]] = None
     # User intent (parent's `meeting.data.stop_requested`) — set by the DELETE/stop path, read
     # first by the exit classifier so a user stop is never mis-attributed as a failure.
     stop_requested: bool = False
@@ -286,6 +288,8 @@ class MeetingRecord:
             d["stt_fault"] = dict(self.stt_fault)
         if self.speaker_events is not None:
             d["speaker_events"] = list(self.speaker_events)
+        if self.participants is not None:
+            d["participants"] = list(self.participants)
         return d
 
 
@@ -512,6 +516,9 @@ class LifecycleSink:
                 rec.stt_fault = dict(event["stt_fault"])
             if event.get("speaker_events"):
                 rec.speaker_events = [dict(e) for e in event["speaker_events"]]
+            if isinstance(event.get("participants"), list):
+                names = [p[:200] for p in event["participants"] if isinstance(p, str) and p]
+                rec.participants = names[:200] or None
 
         rec.status = to
         rec.history.append(to)

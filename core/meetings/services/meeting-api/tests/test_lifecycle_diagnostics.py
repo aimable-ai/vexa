@@ -261,6 +261,44 @@ def test_terminal_event_persists_speaker_events():
     assert final["data"]["speaker_events"] == events
 
 
+def test_terminal_event_persists_participants():
+    """AIM-2073: who was in the meeting rides the terminal event into meeting.data and the webhook."""
+    participants = ["Joost van Bruggen | MavenBlue", "Anna de Vries"]
+    terminal = {
+        "connection_id": "sess-uid", "status": "completed", "exit_code": 0,
+        "completion_reason": "left_alone", "participants": participants,
+    }
+    conforms(terminal, "LifecycleEvent")
+    client, app, deliveries = _client()
+    final = _drive(client, JOINING, ACTIVE, terminal)[-1]
+    assert final["data"]["participants"] == participants
+    status_hooks = [d for d in deliveries if d["event_type"] == "meeting.status_change"]
+    assert status_hooks[-1]["data"]["meeting"]["data"]["participants"] == participants
+
+
+def test_terminal_participants_are_bounded():
+    """Untrusted input: non-strings and empty names dropped, at most 200 names of at most 200 chars."""
+    raw = ["x" * 500, "", {"name": "Alice"}, 7] + [f"P{i}" for i in range(300)]
+    client, app, deliveries = _client()
+    final = _drive(client, JOINING, ACTIVE, {
+        "connection_id": "sess-uid", "status": "completed", "exit_code": 0,
+        "completion_reason": "stopped", "participants": raw,
+    })[-1]
+    kept = final["data"]["participants"]
+    assert len(kept) == 200
+    assert kept[0] == "x" * 200
+    assert kept[1] == "P0"
+
+
+def test_no_participants_leaves_data_unchanged():
+    client, app, deliveries = _client()
+    final = _drive(client, JOINING, ACTIVE, {
+        "connection_id": "sess-uid", "status": "completed", "exit_code": 0,
+        "completion_reason": "stopped", "participants": [""],
+    })[-1]
+    assert "participants" not in final["data"]
+
+
 def test_healthy_meeting_carries_no_stt_fault():
     """Negative control: the field appears ONLY when something actually degraded."""
     client, app, deliveries = _client()

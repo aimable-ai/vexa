@@ -5,22 +5,43 @@
  * resolves to the id it last had in a snapshot where it was unique: a rejoin (new id, old tile
  * gone) moves the name to the new id, and while two participants in the latest snapshot share a
  * name, that name has no id — never a guess. Segments are stamped when published.
+ *
+ * Every roster name (Meet snapshots, Teams tiles) is also kept as the meeting's participant list:
+ * Whisper hint words while live, and the terminal lifecycle event's `participants`.
  */
 import type { TranscriptSegment } from './contracts.js';
 import type { SpeakerEvent, TranscriptSink } from './ports.js';
 
 export interface SpeakerIds {
   recordRoster(participants: { id: string; name: string }[]): void;
+  /** A roster name without a platform id (Teams tiles). */
+  recordName(name: string): void;
   idFor(name: string): string | undefined;
+  /** Everyone seen in the meeting, first-seen order; the bot and placeholder names excluded. */
+  participants(): string[];
 }
 
-export function createSpeakerIds(): SpeakerIds {
+/** Platform labels for a participant with no usable name. */
+const PLACEHOLDER_NAME = /^(?:(?:teams|google) participant \(|unknown\b|speaker\b)/i;
+
+/** The name without an organisation suffix: "Joost van Bruggen | MavenBlue" → "Joost van Bruggen". */
+export const bareName = (name: string): string => name.split(/ \| | \(/)[0].trim();
+
+export function createSpeakerIds(selfName?: string): SpeakerIds {
   const idByName = new Map<string, string>();
   const ambiguous = new Set<string>();
+  const seen = new Set<string>();
+  const self = bareName(selfName ?? '').toLowerCase();
+  const see = (raw: unknown): void => {
+    const name = typeof raw === 'string' ? raw.trim() : '';
+    if (!name || PLACEHOLDER_NAME.test(name) || (self && bareName(name).toLowerCase() === self)) return;
+    seen.add(name);
+  };
   return {
     recordRoster(participants) {
       const idsByName = new Map<string, Set<string>>();
       for (const { id, name } of participants) {
+        see(name);
         if (!idsByName.has(name)) idsByName.set(name, new Set());
         idsByName.get(name)!.add(id);
       }
@@ -30,9 +51,11 @@ export function createSpeakerIds(): SpeakerIds {
         else idByName.set(name, [...ids][0]);
       }
     },
+    recordName: see,
     idFor(name) {
       return ambiguous.has(name) ? undefined : idByName.get(name);
     },
+    participants: () => [...seen],
   };
 }
 

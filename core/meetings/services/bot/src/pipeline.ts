@@ -41,6 +41,7 @@ import { TranscriptionClient, type TranscriptionResult } from '@vexa/transcribe-
 import { VoxtralTranscriber, Reson8Transcriber, LiveSpeakerStreams, type VoxtralTranscriberConfig } from '@vexa/stt-live';
 import { teamsLiveTranscriberFactory, type TeamsLiveSegment } from './teams-live.js';
 import { isMixedLanePlatform, type Invocation, type Platform } from './config.js';
+import { bareName } from './speaker-ids.js';
 import type { TranscriptSegment } from './contracts.js';
 import type { Pipeline, TranscriptSink } from './ports.js';
 
@@ -516,10 +517,25 @@ function createLiveTranscriberFactory(engine: Exclude<LiveEngine, null>, inv: In
         { url, apiToken: inv.transcriptionServiceToken ?? undefined, model: inv.transcriptionModel ?? undefined, languageRepair: languageRepairFromEnv(), junkPhrases }, cb);
 }
 
+/** Participant names as Whisper hint words: organisation suffix stripped, deduped, comma-separated,
+ *  whole names only up to `maxChars`. Undefined when there are none. */
+export function participantHint(names: string[], maxChars = 300): string | undefined {
+  const kept: string[] = [];
+  let used = 0;
+  for (const name of new Set(names.map(bareName))) {
+    const cost = name.length + (kept.length ? 2 : 0);
+    if (!name || used + cost > maxChars) continue;
+    kept.push(name);
+    used += cost;
+  }
+  return kept.join(', ') || undefined;
+}
+
 /** Build the real STT transcribe closure from invocation.v1 — language baked into the call so
  *  the lane never knows about config. transcribeEnabled=false ⇒ a no-op transcribe (the engine
- *  still runs turn gating but emits empty text; recording-only meetings need no STT). */
-export function createTranscribe(inv: Invocation): Transcribe {
+ *  still runs turn gating but emits empty text; recording-only meetings need no STT).
+ *  `participantNames` is read per call, so late joiners reach the next window. */
+export function createTranscribe(inv: Invocation, participantNames?: () => string[]): Transcribe {
   if (inv.transcribeEnabled === false || !inv.transcriptionServiceUrl) {
     return async () => ({ text: '', language: inv.language ?? 'en', duration: 0, segments: [] });
   }
@@ -529,9 +545,11 @@ export function createTranscribe(inv: Invocation): Transcribe {
     model: inv.transcriptionModel ?? undefined,
   });
   const language = inv.language ?? undefined;
-  // Whisper has ONE prompt slot: the vocabulary bias leads, the lane's continuity context follows.
+  // Whisper has ONE prompt slot and keeps its END: the vocabulary bias leads, participant names
+  // follow, the lane's continuity context comes last.
   const bias = inv.initialPrompt?.trim() || undefined;
-  return (pcm, prompt) => client.transcribe(pcm, language, [bias, prompt].filter(Boolean).join(' ') || undefined);
+  return (pcm, prompt) => client.transcribe(pcm, language,
+    [bias, participantHint(participantNames?.() ?? []), prompt].filter(Boolean).join(' ') || undefined);
 }
 
 /**
@@ -555,9 +573,11 @@ export function createBotPipeline(
     /** Where the lane's own typed observations go (the turn-spine switch). Wired at the
      *  composition root to the capture-signal recorder's observations sidecar. */
     onObservation?: (source: string, obs: Record<string, unknown>, tMs?: number) => void;
+    /** Meeting participant names — Whisper hint words (see createTranscribe). */
+    participantNames?: () => string[];
   } = {},
 ): BotPipeline {
-  const transcribe = opts.transcribe ?? createTranscribe(inv);
+  const transcribe = opts.transcribe ?? createTranscribe(inv, opts.participantNames);
   // Live-engine dispatch: a live transcription URL replaces the lane's whisper
   // machinery wholesale (an injected test factory/transcribe still wins).
   const live = inv.transcribeEnabled === false ? null : liveEngineForUrl(inv.transcriptionServiceUrl);
