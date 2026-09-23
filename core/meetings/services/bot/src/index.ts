@@ -213,7 +213,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   // "what did this meeting actually say?" could only be answered by re-running it against a redis
   // that no longer exists by then.
   const snapshot = signalRecorder ? wrapTranscriptWithSnapshot<TranscriptSegment, TranscriptSink>(liveTranscript, signalRecorder.transcriptPath) : null;
-  const speakerIds = createSpeakerIds();
+  const speakerIds = createSpeakerIds(inv.botName);
+  const participantNames = (): string[] => speakerIds.participants().map((p) => p.name);
   const transcript: TranscriptSink = withSpeakerIds(snapshot ?? liveTranscript, speakerIds);
   // Counts STT failures across the meeting so the terminal lifecycle event can carry WHY a
   // transcript is short or empty, instead of leaving it indistinguishable from a silent room.
@@ -233,7 +234,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
       // Chunked-whisper lane only: an injected transcribe pins that lane, and a live engine (voxtral/
       // reson8) has no batch round-trip to tap — passing one would silently demote it to chunked.
       transcribe: signalRecorder && !liveEngineForUrl(inv.transcribeEnabled === false ? undefined : inv.transcriptionServiceUrl)
-        ? wrapTranscribeWithTap(createTranscribe(inv), signalRecorder.path) : undefined,
+        ? wrapTranscribeWithTap(createTranscribe(inv, participantNames), signalRecorder.path) : undefined,
+      participantNames,
       config: speakerStreamConfig,
       // Every STT fault is counted and carried out on the terminal lifecycle event (see
       // sttFaults). Logging it here as well keeps the raw line for anyone tailing the container.
@@ -286,7 +288,11 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
         console.error(`[bot] live-pipeline: ${stage} failed (non-fatal, bot stays seated): ${serr(e)}`);
       },
     });
-    pipeline = { ...live, speakerEvents: () => turnsWithSpeakerIds(live.speakerEvents?.() ?? [], speakerIds) };
+    pipeline = {
+      ...live,
+      speakerEvents: () => turnsWithSpeakerIds(live.speakerEvents?.() ?? [], speakerIds),
+      participants: () => speakerIds.participants(),
+    };
     // Voice: tee acts so `speak`/`speak_stop` reach the SpeakController (gated on voiceAgentEnabled).
     const speak = createSpeakController(session.page, inv);
     acts = teeActs(liveActs, voiceHandler(speak));

@@ -50,6 +50,8 @@ export interface LifecycleEvent {
   bot_logs?: string[];
   bot_resources?: { peak_memory_bytes?: number; cpu_usage_usec?: number; [k: string]: unknown };
   speaker_events?: unknown[];
+  /** Terminal: who was in the meeting ({name, id?}). Additive (lifecycle.v1 is additionalProperties:true). */
+  participants?: { name: string; id?: string }[];
   /** Machine-readable infra-fault tag on a pre-join control-plane-unreachable abort (#530).
    *  Additive field: lifecycle.v1 ingests liberally (additionalProperties:true), so this rides
    *  the SEALED contract WITHOUT a schema/seal bump — it carries the attribution the sealed

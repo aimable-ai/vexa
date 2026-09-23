@@ -97,6 +97,23 @@ async function main(): Promise<void> {
     check('happy: pipeline started then stopped', pipe.started === false);
   }
 
+  // ── AIM-2073: the pipeline's participant list rides the terminal event, schema-valid ──
+  {
+    const lc = recordingSink();
+    const participants = [{ name: 'Joost van Bruggen | MavenBlue', id: 'spaces/x/devices/1' }, { name: 'Anna' }];
+    let fireLeave: (a: { action: 'leave' }) => void = () => {};
+    const o = createOrchestrator(inv(), {
+      lifecycle: lc, join: mockJoin('admitted'), pipeline: { ...noopPipeline(), participants: () => participants },
+      acts: noopActs((f) => { fireLeave = f; }), aloneness: noopAloneness(),
+    });
+    const runP = o.run();
+    setTimeout(() => fireLeave({ action: 'leave' }), 5);
+    await runP;
+    check('participants: ride the completed event', JSON.stringify(last(lc.events).participants) === JSON.stringify(participants));
+    check('participants: only on the terminal event', lc.events.slice(0, -1).every((e) => e.participants === undefined));
+    check('participants: events conform', allConform(lc.events), ajv.errorsText(validateLifecycle.errors));
+  }
+
   // ── producer-owned event time: admission/runtime billing survives callback delay ──
   {
     const lc = recordingSink();

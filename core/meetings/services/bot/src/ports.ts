@@ -57,9 +57,13 @@ export interface Pipeline {
   /** Who spoke when (epoch seconds), whether or not STT produced text — rides the terminal lifecycle
    *  event so a post-meeting transcript can attribute every word. Lanes without a timeline omit it. */
   speakerEvents?(): SpeakerEvent[];
+  /** Who was in the meeting (roster names as seen, bot excluded) — rides the terminal lifecycle event. */
+  participants?(): Participant[];
 }
 
 export interface SpeakerEvent { speaker: string; start: number; end: number; speaker_id?: string }
+
+export interface Participant { name: string; id?: string }
 
 /** transcript.v1 egress — the engine pushes speaker-attributed segments here; the real
  *  adapter publishes them to the redis stream / bus consumed by the collector. */
