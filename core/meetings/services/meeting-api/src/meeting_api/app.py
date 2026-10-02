@@ -509,18 +509,9 @@ def _mount_lifecycle(
                     },
                 )
         rec = change.record
-        # Build + record the status_change envelope only on a REAL advance — an idempotent replay
-        # (change.no_op, e.g. the bot's 3x terminal retry) must NOT double-count it. The persist, the
-        # webhook deliver, and the ws publish below are already no_op-gated (they hang off meeting_row,
-        # set only on a real persist), so end-user delivery is exactly-once; this keeps the in-process
-        # envelope log honest too.
-        envelope = None
-        if not change.no_op:
-            envelope = build_status_change_envelope(change)
-            app.state.status_change_webhooks.append(envelope)
         # Persist the FSM advance to the DB meeting row → durable + queryable (GET /meetings reflects
         # it, survives a restart), not only the in-process MeetingStore. Best-effort: a DB hiccup must
-        # never fail the bot's lifecycle callback (the in-process FSM + webhook already advanced).
+        # never fail the bot's lifecycle callback (the in-process FSM already advanced).
         # On an idempotent replay (change.no_op) the FSM did not actually advance — skip the
         # re-persist + re-deliver so a redelivered terminal does not fire a duplicate webhook /
         # publish. We still return 200 (handled below) — the redelivery is acknowledged as a no-op.
@@ -628,13 +619,22 @@ def _mount_lifecycle(
         # failure) — additive alongside meeting.status_change, never instead of it. Built AFTER the
         # persist so the meeting block is the durable row projection (the parent's
         # _build_meeting_event_data shape) when the row is known; the FSM-record fallback otherwise.
+        # meeting.status_change is built here too (AIM-2225): before the persist it only had the
+        # DB-free {connection_id, status} block, so receivers could not tell which meeting changed.
+        # Only on a REAL advance — an idempotent replay (change.no_op) must not double-count it.
+        envelope = None
         typed_envelope = None
         if not change.no_op:
-            typed_envelope = build_typed_envelope(
+            projection = _meeting_projection_from_row(meeting_row) if isinstance(meeting_row, dict) else None
+            # Identity from the row, but keep the FSM record's small `data` (as before): the full
+            # row data (notes, internal keys) belongs on the typed events only.
+            envelope = build_status_change_envelope(
                 change,
-                meeting=_meeting_projection_from_row(meeting_row)
-                if isinstance(meeting_row, dict) else None,
+                meeting={**projection, "connection_id": rec.connection_id, "data": rec.data}
+                if projection else None,
             )
+            app.state.status_change_webhooks.append(envelope)
+            typed_envelope = build_typed_envelope(change, meeting=projection)
             if typed_envelope is not None:
                 app.state.typed_webhooks.append(typed_envelope)
         # The operator callback is a separate trust boundary from a customer's
