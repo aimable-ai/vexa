@@ -1,13 +1,10 @@
 # deploy-aimable — Aimable's own deploy of the 0.12 stack on vexa.aimable.ai (AIM-2231).
 #
-# Builds only the images Aimable changes (meeting-api, bot) in CI, pushes them to GHCR as
-# sha-<short>, then on the box: refuses while a meeting is live, backs up the compose override,
-# points meeting-api / the runtime's BROWSER_IMAGE at the new tags, restarts those services and
-# rolls back to the backup when they don't come up healthy. Nothing is built on the box.
+# Builds the images Aimable changes (meeting-api, bot) and pushes them to GHCR as sha-<short>
+# plus the moving :deploy tag. Nothing connects to the box: there, deploy/aimable/pull-deploy.sh
+# (cron, every minute) pulls :deploy and applies it once no meeting is live.
 #
 # Not the upstream release chain (release-images.yml publishes vexaai/* to Docker Hub).
-#
-# Environment `vexa-012`: secrets SSH_KEY, HOST, USERNAME (the box user owning ~/vexa-012).
 
 name: Deploy Aimable (vexa 0.12)
 
@@ -20,14 +17,9 @@ on:
         default: meeting-api
         type: choice
         options: [meeting-api, bot, meeting-api+bot]
-      force:
-        description: Deploy even while a meeting is live (its bot status may be lost)
-        type: boolean
-        default: false
 
 env:
   REGISTRY: ghcr.io/aimable-ai
-  DEPLOY_DIR: vexa-012/deploy/compose
 
 concurrency:
   group: deploy-vexa-012
@@ -39,9 +31,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    outputs:
-      meeting_api: ${{ steps.out.outputs.meeting_api }}
-      bot: ${{ steps.out.outputs.bot }}
     steps:
       - uses: actions/checkout@v4
       - id: tag
@@ -60,7 +49,12 @@ jobs:
           context: .
           file: core/meetings/services/meeting-api/Dockerfile
           push: true
-          tags: ${{ env.REGISTRY }}/vexa-v012-meeting-api:${{ steps.tag.outputs.tag }}
+          tags: |
+            ${{ env.REGISTRY }}/vexa-v012-meeting-api:${{ steps.tag.outputs.tag }}
+            ${{ env.REGISTRY }}/vexa-v012-meeting-api:deploy
+          labels: |
+            org.opencontainers.image.version=${{ steps.tag.outputs.tag }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha,scope=meeting-api
           cache-to: type=gha,scope=meeting-api,mode=max
 
@@ -70,48 +64,27 @@ jobs:
         uses: jlumbroso/free-disk-space@v1.3.1
       - if: contains(inputs.services, 'bot')
         env:
-          IMAGE: ${{ env.REGISTRY }}/vexa-v012-bot:${{ steps.tag.outputs.tag }}
+          REPO: ${{ env.REGISTRY }}/vexa-v012-bot
+          TAG: ${{ steps.tag.outputs.tag }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
         run: |
           set -euo pipefail
           DOCKER_BUILDKIT=1 docker build -f core/meetings/modules/join/Dockerfile.env \
             -t vexa/meet-join-env:dev core/meetings/modules/join
           DOCKER_BUILDKIT=1 docker build -f core/meetings/services/bot/Dockerfile \
-            --build-arg "VEXA_IMAGE_VERSION=${{ steps.tag.outputs.tag }}" -t "$IMAGE" .
-          docker push "$IMAGE"
+            --build-arg "VEXA_IMAGE_VERSION=$TAG" \
+            --label "org.opencontainers.image.version=$TAG" \
+            --label "org.opencontainers.image.source=$SOURCE" \
+            -t "$REPO:$TAG" -t "$REPO:deploy" .
+          docker push "$REPO:$TAG"
+          docker push "$REPO:deploy"
 
-      - id: out
-        run: |
-          if [[ "${{ inputs.services }}" == *meeting-api* ]]; then
-            echo "meeting_api=${{ env.REGISTRY }}/vexa-v012-meeting-api:${{ steps.tag.outputs.tag }}" >> "$GITHUB_OUTPUT"
-          fi
-          if [[ "${{ inputs.services }}" == *bot* ]]; then
-            echo "bot=${{ env.REGISTRY }}/vexa-v012-bot:${{ steps.tag.outputs.tag }}" >> "$GITHUB_OUTPUT"
-          fi
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment: vexa-012
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - name: SSH config
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/key && chmod 600 ~/.ssh/key
-          printf 'Host box\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/key\n  StrictHostKeyChecking accept-new\n  ConnectTimeout 15\n' \
-            "${{ secrets.HOST }}" "${{ secrets.USERNAME }}" > ~/.ssh/config
-
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: deploy/aimable
-      - name: Deploy on the box
+      - name: Summary
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SERVICES: ${{ inputs.services }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          scp deploy/aimable/deploy-on-box.sh box:/tmp/aimable-deploy.sh
-          # The GHCR token goes over stdin, never on a command line.
-          echo "$GH_TOKEN" | ssh box bash /tmp/aimable-deploy.sh \
-            "'${{ env.DEPLOY_DIR }}'" "'${{ needs.build.outputs.meeting_api }}'" "'${{ needs.build.outputs.bot }}'" \
-            "'${{ inputs.force }}'" "'${{ github.actor }}'"
+          {
+            echo "Pushed $SERVICES as $TAG (+ :deploy)."
+            echo "The box applies it within a minute once no meeting is live (~/aimable-deploy/deploy.log)."
+          } >> "$GITHUB_STEP_SUMMARY"
