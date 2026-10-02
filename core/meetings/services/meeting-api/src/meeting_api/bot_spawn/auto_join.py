@@ -12,8 +12,9 @@ counted, never error-stamped).
 Defense in depth behind that dedup: before spawning, the tick asks the repo which
 (user, platform, native) tuples a bot ALREADY owns (``list_live_meetings`` over ``LIVE_STATUSES``)
 and refuses a due row whose room is already covered by a DIFFERENT row — stamping
-``data.auto_join_error`` with the holding meeting id. Two Vexa bots in one meeting is never
-correct however the two rows came to exist (live 2026-08-17: a manual "Send bot now" row plus a
+``data.auto_join_error`` with the holding meeting id. Rows sharing ``data.dedup_group`` (one
+company across Vexa users, Aimable AIM-2233) also cover each other. Two Vexa bots in one meeting
+is never correct however the two rows came to exist (live 2026-08-17: a manual "Send bot now" row plus a
 calendar import of the same Meet that failed to adopt it).
 
 Failures are LOUD, never silent (P18/P10): a cap/quota rejection or spawn failure stamps
@@ -136,16 +137,30 @@ LIVE_STATUSES = (
 )
 
 
+def _guard_keys(row: dict) -> list[tuple]:
+    """The room keys a row covers: its own (user, platform, native), plus
+    ("group", dedup_group, platform, native) when the planner set ``data.dedup_group`` (Aimable
+    AIM-2233: one calendar bot per meeting per company across Vexa users)."""
+    platform, native = row.get("platform"), row.get("native_meeting_id")
+    if not platform or not native:
+        return []
+    keys = []
+    if row.get("user_id") is not None:
+        keys.append((row.get("user_id"), platform, native))
+    data = row.get("data") if isinstance(row.get("data"), dict) else {}
+    if data.get("dedup_group"):
+        keys.append(("group", data["dedup_group"], platform, native))
+    return keys
+
+
 def live_keys(rows: Optional[list]) -> dict[tuple, Any]:
-    """``{(user_id, platform, native_meeting_id): meeting_id}`` over the repo's live rows."""
+    """``{room key: meeting_id}`` over the repo's live rows (see ``_guard_keys``)."""
     out: dict[tuple, Any] = {}
     for row in rows or ():
         if not isinstance(row, dict):
             continue
-        key = (row.get("user_id"), row.get("platform"), row.get("native_meeting_id"))
-        if key[0] is None or not key[1] or not key[2]:
-            continue
-        out.setdefault(key, row.get("id"))
+        for key in _guard_keys(row):
+            out.setdefault(key, row.get("id"))
     return out
 
 
@@ -283,8 +298,9 @@ async def auto_join_tick(
 
     for row in due:
         user_id = row["user_id"]
-        holder = live.get((user_id, row.get("platform"), row.get("native_meeting_id")))
-        if holder is not None and holder != row.get("id"):
+        holder = next((h for h in (live.get(k) for k in _guard_keys(row))
+                       if h is not None and h != row.get("id")), None)
+        if holder is not None:
             # A bot is already in this room on another row — the classic shape is a manual
             # "Send bot now" plus a calendar import of the same link that failed to adopt it
             # (live 2026-08-17: rows 26237 live + 26251 imported, native mjm-dycn-qdp). Refuse
@@ -384,6 +400,9 @@ async def auto_join_tick(
             await _stamp_error(row, str(e) or "bot workload failed to start")
             continue
         counters["spawned"] += 1
+        # this bot now owns the room: a second due row in the SAME tick must see it
+        for key in _guard_keys(row):
+            live.setdefault(key, row["id"])
         if data.get("auto_join_error"):
             # a prior failure resolved — clear the stamp so the row reads clean
             await repo.merge_meeting_data(row["id"], {

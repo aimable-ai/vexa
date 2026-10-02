@@ -162,6 +162,8 @@ class TranscriptStore(Protocol):
         attendees: Optional[list] = None,
         auto_join_last_attempt: Optional[str] = None,
         auto_join_error: Optional[str] = None,
+        spawn: Optional[dict] = None,
+        dedup_group: Optional[str] = None,
     ) -> dict:
         """Create a PLANNED meeting row — status ``scheduled`` (when ``scheduled_at`` is set) or
         ``idle`` — with NO bot spawned. Link-less plans use ``platform='unknown'`` +

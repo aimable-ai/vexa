@@ -348,6 +348,44 @@ async def test_live_row_for_another_user_does_not_block():
     assert counters["spawned"] == 1 and counters["skipped_live"] == 0
 
 
+async def test_live_row_for_another_user_in_the_same_dedup_group_blocks():
+    """AIM-2233: one company's tenants on several Aimable servers are different Vexa users; a
+    shared ``dedup_group`` makes them one bot per meeting."""
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    _seed(repo, mid=1, status="active", at=None, user_id=99, data_extra={"dedup_group": "aimable.ai"})
+    due = _seed(repo, mid=2, status="scheduled", at=NOW, data_extra={"dedup_group": "aimable.ai"})
+    counters = await _tick(repo, runtime)
+    assert counters["spawned"] == 0 and counters["skipped_live"] == 1
+    assert "meeting 1" in repo._meetings[due]["data"]["auto_join_error"]
+
+
+async def test_live_row_in_another_dedup_group_does_not_block():
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    _seed(repo, mid=1, status="active", at=None, user_id=99, data_extra={"dedup_group": "mavenblue.com"})
+    _seed(repo, mid=2, status="scheduled", at=NOW, data_extra={"dedup_group": "aimable.ai"})
+    counters = await _tick(repo, runtime)
+    assert counters["spawned"] == 1 and counters["skipped_live"] == 0
+
+
+async def test_two_users_due_in_one_tick_spawn_once_per_dedup_group():
+    """Both rows are due in the same tick (live 2026-10-02: planned 4 s apart). The first spawn
+    must be visible to the second row in that tick."""
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    _seed(repo, mid=1, status="scheduled", at=NOW, user_id=99, data_extra={"dedup_group": "aimable.ai"})
+    _seed(repo, mid=2, status="scheduled", at=NOW, data_extra={"dedup_group": "aimable.ai"})
+    counters = await _tick(repo, runtime)
+    assert counters["spawned"] == 1 and counters["skipped_live"] == 1
+    assert len(runtime.specs) == 1
+
+
+async def test_two_users_due_in_one_tick_without_a_group_both_spawn():
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    _seed(repo, mid=1, status="scheduled", at=NOW, user_id=99)
+    _seed(repo, mid=2, status="scheduled", at=NOW)
+    counters = await _tick(repo, runtime)
+    assert counters["spawned"] == 2
+
+
 async def test_live_keys_ignores_terminal_and_linkless_rows():
     from meeting_api.bot_spawn.auto_join import live_keys
 

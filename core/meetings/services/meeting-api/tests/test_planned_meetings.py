@@ -277,3 +277,19 @@ def test_patch_spawn_replaces_and_null_clears():
     assert r.status_code == 200 and r.json()["data"]["spawn"] == {"language": "en", "bot_name": "B"}
     r = client.patch(f"/meetings/{mid}", json={"spawn": None}, headers=H)
     assert r.status_code == 200 and "spawn" not in r.json()["data"]
+
+
+# ---- dedup_group (Aimable AIM-2233): one auto-join bot per meeting per group -------------
+
+def test_dedup_group_is_stored_normalized_and_patchable():
+    client, _, _ = _client()
+    r = client.post("/meetings", json={"scheduled_at": AT, "meeting_url": URL,
+                                       "dedup_group": " Aimable.AI "}, headers=H)
+    assert r.status_code == 201 and r.json()["data"]["dedup_group"] == "aimable.ai"
+    mid = r.json()["id"]
+    r = client.patch(f"/meetings/{mid}", json={"dedup_group": "mavenblue.com"}, headers=H)
+    assert r.status_code == 200 and r.json()["data"]["dedup_group"] == "mavenblue.com"
+    r = client.patch(f"/meetings/{mid}", json={"dedup_group": None}, headers=H)
+    assert r.status_code == 200 and "dedup_group" not in r.json()["data"]
+    r = client.post("/meetings", json={"meeting_url": URL + "x", "dedup_group": 5}, headers=H)
+    assert r.status_code == 422
