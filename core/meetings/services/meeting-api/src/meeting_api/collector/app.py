@@ -122,6 +122,19 @@ def _validated_spawn(value) -> Optional[dict]:
             raise HTTPException(status_code=422, detail=f"unknown 'spawn' field '{k}'")
     return out or None
 
+def _validated_dedup_group(value) -> Optional[str]:
+    """Aimable AIM-2233: planners sharing a ``dedup_group`` (e.g. one company's tenants on
+    several Aimable servers) get one auto-join bot per meeting between them."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail="'dedup_group' must be a string")
+    value = value.strip().lower()
+    if len(value) > 255:
+        raise HTTPException(status_code=422, detail="'dedup_group' too long")
+    return value or None
+
+
 def _resolve_user_id(x_user_id: Optional[str]) -> int:
     """The gateway injects ``x-user-id`` after it resolves ``x-api-key`` (anti-spoofing: it
     strips any client-supplied identity header first). Missing → 401 fail-closed."""
@@ -419,11 +432,13 @@ def build_router(
         if not isinstance(auto_join, bool):
             raise HTTPException(status_code=422, detail="'auto_join' must be a boolean")
         spawn = _validated_spawn(payload.get("spawn"))
+        dedup_group = _validated_dedup_group(payload.get("dedup_group"))
 
         row = await store.create_planned_meeting(
             user_id, platform=platform, native_meeting_id=native_id,
             title=title, scheduled_at=scheduled_at, meeting_url=meeting_url,
             workspace_id=workspace_id, auto_join=auto_join, spawn=spawn,
+            dedup_group=dedup_group,
         )
         if isinstance(row, dict) and row.get("error") == "duplicate":
             raise HTTPException(
@@ -507,6 +522,8 @@ def build_router(
             updates["auto_join_user_set"] = True
         if "spawn" in payload:
             updates["spawn"] = _validated_spawn(payload["spawn"])
+        if "dedup_group" in payload:
+            updates["dedup_group"] = _validated_dedup_group(payload["dedup_group"])
         if not updates:
             raise HTTPException(status_code=422, detail="no editable fields in body")
 

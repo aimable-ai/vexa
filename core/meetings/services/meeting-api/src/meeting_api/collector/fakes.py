@@ -381,7 +381,7 @@ class InMemoryTranscriptStore:
                                      calendar_source=None,
                                      workspace_source=None, attendees=None,
                                      auto_join_last_attempt=None,
-                                     auto_join_error=None, spawn=None):
+                                     auto_join_error=None, spawn=None, dedup_group=None):
         if self._dup_non_terminal(user_id, platform, native_meeting_id):
             return {"error": "duplicate"}
         data: dict = {"auto_join": bool(auto_join)}
@@ -410,6 +410,8 @@ class InMemoryTranscriptStore:
             data["auto_join_error"] = auto_join_error
         if spawn:
             data["spawn"] = spawn
+        if dedup_group:
+            data["dedup_group"] = dedup_group
         mid = self.seed_meeting(
             user_id=user_id, platform=platform, native_meeting_id=native_meeting_id,
             status="scheduled" if scheduled_at else "idle",
@@ -495,6 +497,11 @@ class InMemoryTranscriptStore:
                 data["spawn"] = updates["spawn"]
             else:
                 data.pop("spawn", None)
+        if "dedup_group" in updates:
+            if updates["dedup_group"]:
+                data["dedup_group"] = updates["dedup_group"]
+            else:
+                data.pop("dedup_group", None)
         if "calendar_uid" in updates:
             if updates["calendar_uid"]:
                 data["calendar_uid"] = updates["calendar_uid"]
