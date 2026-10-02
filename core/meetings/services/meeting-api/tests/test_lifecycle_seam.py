@@ -1646,3 +1646,27 @@ def test_pre_active_grace_follows_the_lobby_budget_env_override(monkeypatch):
     assert default_preactive_grace() == 1860.0
     monkeypatch.setenv("VEXA_LOBBY_BUDGET_S", "300")
     assert default_preactive_grace() == 360.0
+
+
+def test_status_change_webhook_names_the_meeting():
+    """AIM-2225 — every meeting.status_change carries the persisted meeting (id, platform,
+    native_meeting_id) next to connection_id, so a receiver can tell which meeting changed.
+
+    BUG (pre-fix): the envelope was built before the persist with only
+    {connection_id, status, completion_reason, failure_stage, data}."""
+    repo = InMemoryMeetingRepo()
+    app = create_app(meeting_repo=repo)
+    client = TestClient(app)
+    m = _seed(repo, status="requested", session_uid="named-sess")
+
+    for st in ("joining", "awaiting_admission"):
+        r = _post(client, connection_id="named-sess", status=st)
+        assert r.status_code == 200, r.text
+
+    for env in app.state.status_change_webhooks:
+        meeting = env["data"]["meeting"]
+        assert meeting["id"] == m["id"]
+        assert meeting["platform"] == "google_meet"
+        assert meeting["native_meeting_id"] == "m1"
+        assert meeting["connection_id"] == "named-sess"
+    assert app.state.status_change_webhooks[-1]["data"]["meeting"]["status"] == "awaiting_admission"
