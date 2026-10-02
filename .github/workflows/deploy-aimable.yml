@@ -4,11 +4,22 @@
 # plus the moving :deploy tag. Nothing connects to the box: there, deploy/aimable/pull-deploy.sh
 # (cron, every minute) pulls :deploy and applies it once no meeting is live or about to start.
 #
+# Runs on every push to the deployed branch that touches an image's own code (the `changes` job
+# picks which), or by hand. A change elsewhere in core/ that the bot also copies needs a manual run.
+#
 # Not the upstream release chain (release-images.yml publishes vexaai/* to Docker Hub).
 
 name: Deploy Aimable (vexa 0.12)
 
 on:
+  push:
+    branches: [aim-1467-vexa-012-port]
+    paths:
+      - core/meetings/services/meeting-api/**
+      - core/meetings/contracts/**
+      - core/runtime/contracts/**
+      - core/meetings/services/bot/**
+      - core/meetings/modules/**
   workflow_dispatch:
     inputs:
       services:
@@ -26,9 +37,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      meeting_api: ${{ steps.pick.outputs.meeting_api }}
+      bot: ${{ steps.pick.outputs.bot }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          SERVICES: ${{ inputs.services }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            case "$SERVICES" in *meeting-api*) echo "meeting_api=true" >> "$GITHUB_OUTPUT";; esac
+            case "$SERVICES" in *bot*) echo "bot=true" >> "$GITHUB_OUTPUT";; esac
+            exit 0
+          fi
+          # unknown base (force push): deploy nothing, run it by hand
+          changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null) || changed=""
+          if echo "$changed" | grep -qE '^core/(meetings/(services/meeting-api|contracts)|runtime/contracts)/'; then
+            echo "meeting_api=true" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^core/meetings/(services/bot|modules)/'; then
+            echo "bot=true" >> "$GITHUB_OUTPUT"
+          fi
+
   meeting-api:
+    needs: changes
     # :deploy goes to production, so only from the deployed branch.
-    if: contains(inputs.services, 'meeting-api') && github.ref == 'refs/heads/aim-1467-vexa-012-port'
+    if: needs.changes.outputs.meeting_api == 'true' && github.ref == 'refs/heads/aim-1467-vexa-012-port'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -62,7 +103,8 @@ jobs:
   # Own job without buildx: the bot builds FROM the local vexa/meet-join-env:dev base, which only
   # the classic docker driver can see (same as release-images.yml).
   bot:
-    if: contains(inputs.services, 'bot') && github.ref == 'refs/heads/aim-1467-vexa-012-port'
+    needs: changes
+    if: needs.changes.outputs.bot == 'true' && github.ref == 'refs/heads/aim-1467-vexa-012-port'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
