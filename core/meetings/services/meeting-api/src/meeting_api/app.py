@@ -511,7 +511,7 @@ def _mount_lifecycle(
         rec = change.record
         # Persist the FSM advance to the DB meeting row → durable + queryable (GET /meetings reflects
         # it, survives a restart), not only the in-process MeetingStore. Best-effort: a DB hiccup must
-        # never fail the bot's lifecycle callback (the in-process FSM + webhook already advanced).
+        # never fail the bot's lifecycle callback (the in-process FSM already advanced).
         # On an idempotent replay (change.no_op) the FSM did not actually advance — skip the
         # re-persist + re-deliver so a redelivered terminal does not fire a duplicate webhook /
         # publish. We still return 200 (handled below) — the redelivery is acknowledged as a no-op.
@@ -626,8 +626,12 @@ def _mount_lifecycle(
         typed_envelope = None
         if not change.no_op:
             projection = _meeting_projection_from_row(meeting_row) if isinstance(meeting_row, dict) else None
+            # Identity from the row, but keep the FSM record's small `data` (as before): the full
+            # row data (notes, internal keys) belongs on the typed events only.
             envelope = build_status_change_envelope(
-                change, meeting={**projection, "connection_id": rec.connection_id} if projection else None,
+                change,
+                meeting={**projection, "connection_id": rec.connection_id, "data": rec.data}
+                if projection else None,
             )
             app.state.status_change_webhooks.append(envelope)
             typed_envelope = build_typed_envelope(change, meeting=projection)

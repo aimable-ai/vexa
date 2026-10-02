@@ -7,6 +7,7 @@ forwards it; bot_spawn persists it into meeting.data; the lifecycle callback del
 from __future__ import annotations
 
 import asyncio
+import json
 
 from fastapi.testclient import TestClient
 
@@ -128,6 +129,22 @@ def test_meeting_started_emitted_on_active(goldens):
     assert sc["from"] == "joining" and sc["to"] == "active"
     assert sc["transition_source"] == "bot_callback"
     assert started["data"]["meeting"]["status"] == "active"
+
+
+def test_delivered_status_change_names_the_meeting_through_completion(goldens):
+    """AIM-2225 — every delivered meeting.status_change, the terminal one included, carries the
+    meeting's id/platform/native_meeting_id, and none of the row's internal data."""
+    client, sink = _wired_client()
+    for ev in ("joining", "active", "completed-stopped"):
+        _post(client, goldens[ev])
+    sent = [c["envelope"] for c in sink.calls if c["event_type"] == "meeting.status_change"]
+    assert len(sent) == 3
+    for env in sent:
+        m = env["data"]["meeting"]
+        assert m["id"] is not None and m["platform"] == "google_meet" and m["native_meeting_id"] == "m1"
+        assert m["connection_id"] == "sess-uid"
+        assert "webhook_secret" not in json.dumps(env)
+    assert sent[-1]["data"]["meeting"]["status"] == "completed"
 
 
 def test_meeting_completed_emitted_with_post_meeting_envelope(goldens):

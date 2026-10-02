@@ -1663,6 +1663,7 @@ def test_status_change_webhook_names_the_meeting():
         r = _post(client, connection_id="named-sess", status=st)
         assert r.status_code == 200, r.text
 
+    assert len(app.state.status_change_webhooks) == 2
     for env in app.state.status_change_webhooks:
         meeting = env["data"]["meeting"]
         assert meeting["id"] == m["id"]
