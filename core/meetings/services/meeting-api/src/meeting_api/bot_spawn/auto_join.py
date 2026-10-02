@@ -296,6 +296,14 @@ async def auto_join_tick(
                 when=data.get("scheduled_at"),
             )
 
+    # A due row whose room is already held (e.g. its user's ungrouped manual bot) lends that bot to
+    # its dedup_group, whatever order the due rows come in.
+    for row in due:
+        held = next((live[k] for k in _guard_keys(row) if k in live), None)
+        if held is not None:
+            for key in _guard_keys(row):
+                live.setdefault(key, held)
+
     for row in due:
         user_id = row["user_id"]
         holder = next((h for h in (live.get(k) for k in _guard_keys(row))
@@ -374,6 +382,8 @@ async def auto_join_tick(
         except DuplicateMeeting:
             # a manual "Send bot now" (or a racing sweep) already claimed it — success, not an error
             counters["already"] += 1
+            for key in _guard_keys(row):
+                live.setdefault(key, row["id"])
             continue
         except MeetingStopped:
             # The user stopped it between this tick's read and the spawn fence. Not an error and not

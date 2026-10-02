@@ -378,6 +378,31 @@ async def test_two_users_due_in_one_tick_spawn_once_per_dedup_group():
     assert len(runtime.specs) == 1
 
 
+async def test_an_ungrouped_manual_bot_covers_the_group_of_its_users_due_row():
+    """User USER sent a bot by hand (no group). Their calendar row is skipped, and so must be
+    another user's row in the same group, even when that row comes first in the tick."""
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    _seed(repo, mid=3, status="scheduled", at=NOW, user_id=99, data_extra={"dedup_group": "aimable.ai"})
+    _seed(repo, mid=1, status="active", at=None)
+    _seed(repo, mid=2, status="scheduled", at=NOW, data_extra={"dedup_group": "aimable.ai"})
+    counters = await _tick(repo, runtime)
+    assert counters["spawned"] == 0 and counters["skipped_live"] == 2
+    assert runtime.specs == []
+
+
+async def test_the_group_survives_the_claim_and_blocks_the_next_tick():
+    """Tick 1 spawns user 99's row (claimed in place); tick 2 sees that live row's group."""
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    later = NOW + timedelta(minutes=10)
+    _seed(repo, mid=1, status="scheduled", at=NOW, user_id=99, data_extra={"dedup_group": "aimable.ai"})
+    due = _seed(repo, mid=2, status="scheduled", at=later, data_extra={"dedup_group": "aimable.ai"})
+    assert (await _tick(repo, runtime))["spawned"] == 1
+    assert repo._meetings[1]["data"]["dedup_group"] == "aimable.ai"
+    counters = await _tick(repo, runtime, now=later)
+    assert counters["spawned"] == 0 and counters["skipped_live"] == 1
+    assert "meeting 1" in repo._meetings[due]["data"]["auto_join_error"]
+
+
 async def test_two_users_due_in_one_tick_without_a_group_both_spawn():
     repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
     _seed(repo, mid=1, status="scheduled", at=NOW, user_id=99)
