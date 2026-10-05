@@ -548,8 +548,25 @@ export function createTranscribe(inv: Invocation, participantNames?: () => strin
   // Whisper has ONE prompt slot and keeps its END: the vocabulary bias leads, participant names
   // follow, the lane's continuity context comes last.
   const bias = inv.initialPrompt?.trim() || undefined;
-  return (pcm, prompt) => client.transcribe(pcm, language,
-    [bias, participantHint(participantNames?.() ?? []), prompt].filter(Boolean).join(' ') || undefined);
+  return async (pcm, prompt) => {
+    const full = [bias, participantHint(participantNames?.() ?? []), prompt].filter(Boolean).join(' ') || undefined;
+    const result = await client.transcribe(pcm, language, full);
+    if (!isPromptEcho(result.text, full)) return result;
+    console.log(`[bot] stt: dropped prompt echo "${result.text.trim().slice(0, 80)}"`);
+    return { ...result, text: '', segments: [] };
+  };
+}
+
+const words = (s: string) =>
+  s.toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
+
+/** AIM-2283: on a near-silent window (e.g. the idle resubmit of an already confirmed tail) Whisper
+ *  repeats its own prompt ("Ludger Visser Hoe oud is Google?"). 3+ words, all from the prompt = echo. */
+export function isPromptEcho(text: string, prompt?: string): boolean {
+  const said = words(text);
+  if (said.length < 3 || !prompt) return false;
+  const known = new Set(words(prompt));
+  return said.every((w) => known.has(w));
 }
 
 /**

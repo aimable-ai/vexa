@@ -16,7 +16,7 @@ import addFormats from 'ajv-formats';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createBotPipeline, createTranscribe, participantHint } from './pipeline.js';
+import { createBotPipeline, createTranscribe, isPromptEcho, participantHint } from './pipeline.js';
 import type { Invocation } from './config.js';
 import type { TranscriptSegment } from './contracts.js';
 import type { TranscriptSink } from './ports.js';
@@ -169,6 +169,24 @@ async function main(): Promise<void> {
     check('initialPrompt leads, context follows', promptParts[0] === 'Aimable, Bolsius, Roundtable zo gezegd.', JSON.stringify(promptParts[0]));
     check('initialPrompt alone when no context', promptParts[1] === 'Aimable, Bolsius, Roundtable', JSON.stringify(promptParts[1]));
     check('no initialPrompt → context alone (wire unchanged)', promptParts[2] === 'zo gezegd.', JSON.stringify(promptParts[2]));
+  }
+
+  // ── 4d) AIM-2283: a result made only of prompt words is Whisper echoing its prompt → dropped. ──
+  {
+    check('echo of names + previous line is detected',
+      isPromptEcho('Ludger Visser Hoe oud is Google?', 'Aimable Ludger Visser Hoe oud is Google?'));
+    check('real speech with new words passes', !isPromptEcho('Hoe oud is Microsoft dan?', 'Ludger Visser Hoe oud is Google?'));
+    check('short repeats (under 3 words) pass', !isPromptEcho('Ja, ja.', 'Ja, ja.'));
+    check('no prompt → never an echo', !isPromptEcho('Pim Verschoor, Aimable Note taker.', undefined));
+    const realFetch = globalThis.fetch;
+    (globalThis as any).fetch = async () => new Response(JSON.stringify({
+      text: 'Ludger Visser Hoe oud is Google?', language: 'nl', duration: 1.9,
+      segments: [{ text: 'Ludger Visser Hoe oud is Google?', start: 0, end: 1.9 }],
+    }), { status: 200 });
+    const out = await createTranscribe(baseInv({ transcriptionServiceUrl: 'http://stt.test' }), () => ['Ludger Visser'])(
+      new Float32Array(1600).fill(0.05), 'Hoe oud is Google?');
+    (globalThis as any).fetch = realFetch;
+    check('createTranscribe drops the echo', out.text === '' && out.segments.length === 0, JSON.stringify(out));
   }
 
   // ── 4c) AIM-2073: participant names ride between the bias and the context (Whisper keeps the END);
