@@ -2,8 +2,9 @@
  * Session language lock for the live Whisper lane (WHISPER_LANG_LOCK=auto (default) | <code> | off).
  *
  * A short window decoded in another language than the session's is usually a mis-detection
- * ("Tá bom") and is dropped; long windows are kept. auto locks on the majority language of the first
- * 40 words and re-locks after WHISPER_LANG_RELOCK_WINDOWS distinct confident windows (prob and length
+ * ("Tá bom"); the client decodes it again in the session language (AIM-2283: dropping it lost
+ * "Aimable, …" wake words heard as English). Long windows are kept as they are. auto locks on
+ * the majority language of the first 40 words and re-locks after WHISPER_LANG_RELOCK_WINDOWS distinct confident windows (prob and length
  * above the _MIN_PROB / _MIN_SEC floors) agree on another language, so a meeting that switches
  * language keeps being transcribed. Phantoms are short and unsure, so they never count.
  */
@@ -34,7 +35,14 @@ export class LanguageLock {
   private streak = 0;
   private lastCounted = '';
 
-  /** True when the window must be dropped. `requested` = the meeting's explicit language, if any. */
+  /** The session language once locked (auto) or configured; undefined while still deciding or off. */
+  get locked(): string | undefined {
+    if (this.mode === 'off') return undefined;
+    return this.mode === 'auto' ? this.auto : this.mode;
+  }
+
+  /** True when the window is in the wrong language and must not pass as-is. `requested` = the
+   *  meeting's explicit language, if any. */
   shouldDrop(w: LockWindow, requested?: string): boolean {
     if (this.mode === 'off') return false;
     const detected = w.detected.toLowerCase();
@@ -72,7 +80,7 @@ export class LanguageLock {
       }
     }
     if (w.dur < this.maxSec) {
-      log(`[STT] dropped window: language ${detected} != lock ${lock} on a ${w.dur.toFixed(1)}s window`);
+      log(`[STT] window in ${detected} != lock ${lock} (${w.dur.toFixed(1)}s)`);
       return true;
     }
     return false;
