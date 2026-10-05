@@ -11,7 +11,7 @@ proving the restored native-keyed surface:
   * GET /bots/status — carries BOTH `running` and `running_bots` (sealed golden field), same list.
   * GET /bots/{platform}/{native}/chat — owner boundary real (unowned → 404); reads the bot's chat list.
   * POST /bots/{platform}/{native}/chat — publishes acts.v1 chat_send (202); 404 unowned, 409 no
-    active bot, 422 empty text (AIM-2283).
+    active bot, 422 empty or over-long text (AIM-2283).
 
 Negative control for the acceptance table: the same requests on current v0.12.2 (no native route)
 return 404 — these tests are the green half of that red→green pair.
@@ -215,6 +215,14 @@ def test_chat_send_empty_text_422():
     for body in ({"text": ""}, {"text": "  \n "}, {}, {"text": 5}):
         r = client.post(f"/bots/{PLAT}/{NATIVE}/chat", json=body, headers=H)
         assert r.status_code == 422, (body, r.status_code)
+    assert redis.published == []
+
+
+def test_chat_send_too_long_text_422():
+    client, redis, _mid = _send_client()
+    r = client.post(f"/bots/{PLAT}/{NATIVE}/chat", json={"text": "x" * 2001}, headers=H)
+    assert r.status_code == 422
+    assert "2000" in r.json()["detail"]
     assert redis.published == []
 
 

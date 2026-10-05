@@ -681,6 +681,8 @@ def build_router(
         text = payload.get("text") if isinstance(payload, dict) else None
         if not isinstance(text, str) or not text.strip():
             raise HTTPException(status_code=422, detail="text must be a non-empty string")
+        if len(text) > 2000:
+            raise HTTPException(status_code=422, detail="text must be at most 2000 characters")
         owned = [
             m for m in await store.list_meetings(user_id, platform=platform)
             if not m.get("shared") and m.get("platform") == platform
