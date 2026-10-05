@@ -52,6 +52,14 @@ const opensInEnglish = () => {
   check("streak resets on a window in the locked language", l.shouldDrop({ ...nl, dur: 3 }) === true);
 }
 {
+  const l = opensInEnglish();
+  l.shouldDrop(nl);
+  l.shouldDrop({ ...nl, dur: 2.5 });
+  l.shouldDrop({ ...en, words: 0 });            // junk the confidence filter emptied ("See you next year.")
+  l.shouldDrop({ ...en, prob: 0.4, dur: 0.8 }); // an unsure, short English guess
+  check("junk or unsure windows in the locked language do not break the streak", l.shouldDrop({ ...nl, dur: 3 }) === false);
+}
+{
   const l = new LanguageLock();
   for (let i = 0; i < 4; i++) l.shouldDrop(nl, "en");
   check("explicit meeting language is never re-locked", l.shouldDrop(nl, "en") === true);

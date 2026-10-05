@@ -51,8 +51,12 @@ export class LanguageLock {
       return false;
     }
     if (!lock || detected === lock) {
-      this.streak = 0;
-      this.lastCounted = '';
+      // Only real speech in the locked language breaks a switch streak; junk the confidence
+      // filter emptied (words 0) or an unsure detection must not keep a meeting stuck.
+      if (w.words > 0 && w.prob >= this.relockMinProb && w.dur >= this.relockMinSec) {
+        this.streak = 0;
+        this.lastCounted = '';
+      }
       return false;
     }
     if (auto && this.relockWindows > 0 && w.prob >= this.relockMinProb && w.dur >= this.relockMinSec && w.words > 0) {

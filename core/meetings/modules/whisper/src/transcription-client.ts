@@ -294,11 +294,6 @@ export class TranscriptionClient {
         return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: data.duration || 0, segments: [] };
       }
       const dur = Number(data.duration || 0);
-      const nWords = String(data.text || '').split(/\s+/).filter(Boolean).length;
-      if (this.langLock.shouldDrop({ detected: String(data.language || ''), prob: langProb, dur, words: nWords }, language) && !known) {
-        log(`[STT] dropped text: ${clip(data.text)}`);
-        return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: dur, segments: [] };
-      }
       const segments = allSegments.filter((s: any) => !isLowConfidenceSegment(s));
       const text = allSegments.length
         ? segments.map((s: any) => (s.text || '').trim()).filter(Boolean).join(' ')
@@ -306,6 +301,12 @@ export class TranscriptionClient {
       if (allSegments.length && segments.length < allSegments.length) {
         const lost = allSegments.filter((s: any) => isLowConfidenceSegment(s)).map((s: any) => clip(s.text)).join(' | ');
         log(`[STT] dropped ${allSegments.length - segments.length}/${allSegments.length} low-confidence segment(s): ${lost}`);
+      }
+      // Words that survived the confidence filter: junk must not count toward or against a lock.
+      const nWords = String(text).split(/\s+/).filter(Boolean).length;
+      if (this.langLock.shouldDrop({ detected: String(data.language || ''), prob: langProb, dur, words: nWords }, language) && !known) {
+        log(`[STT] dropped text: ${clip(data.text)}`);
+        return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: dur, segments: [] };
       }
       return {
         text,
