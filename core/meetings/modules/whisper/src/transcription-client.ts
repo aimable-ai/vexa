@@ -277,19 +277,14 @@ export class TranscriptionClient {
       // Strict gates (0.10 parity): an auto-detected language the model itself doubts means the
       // window was decoded into a guess — unrecoverable text, drop the whole window.
       const langProb = Number(data.language_probability ?? 0);
-      const dur = Number(data.duration || 0);
-      // A window in the wrong or an unsure language is decoded again in the session language
-      // instead of dropped, so a short "Aimable, …" heard as English survives (AIM-2283).
-      const locked = language ? undefined : this.langLock.locked;
-      const drop = { text: '', language: data.language || 'unknown', language_probability: langProb, duration: dur, segments: [] };
       if (STRICT_GATES && !language && langProb > 0 && langProb < 0.3) {
-        if (locked) return this.sendRequest(wavBuffer, locked, prompt);
         log(`[STT] dropped window: language ${data.language} prob=${langProb.toFixed(2)} < 0.3`);
-        return drop;
+        return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: data.duration || 0, segments: [] };
       }
+      const dur = Number(data.duration || 0);
       const nWords = String(data.text || '').split(/\s+/).filter(Boolean).length;
       if (this.langLock.shouldDrop({ detected: String(data.language || ''), prob: langProb, dur, words: nWords }, language)) {
-        return locked ? this.sendRequest(wavBuffer, locked, prompt) : drop;
+        return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: dur, segments: [] };
       }
       const segments = allSegments.filter((s: any) => !isLowConfidenceSegment(s));
       const text = allSegments.length

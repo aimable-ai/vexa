@@ -48,25 +48,6 @@ async function run() {
     check('unconfigured → default whisper-1 (no behavior change)', modelPartOf(body()) === 'whisper-1', `got ${JSON.stringify(modelPartOf(body()))}`);
   }
 
-  // AIM-2283: once locked, a short window in another language is decoded again in the session
-  // language instead of dropped, so "Aimable, zoek op" heard as English survives.
-  {
-    const langs: Array<string | null> = [];
-    (globalThis as any).fetch = async (_url: unknown, init: { body: Buffer }) => {
-      const lang = Buffer.from(init.body).toString('latin1').match(/name="language"\r\n\r\n([^\r]*)\r\n/)?.[1] ?? null;
-      langs.push(lang);
-      const nl = { text: 'een twee drie vier vijf zes zeven acht negen tien', language: 'nl', language_probability: 0.95, duration: 3, segments: [] };
-      if (lang === 'nl') return new Response(JSON.stringify({ ...nl, text: 'Aimable, zoek op.' }), { status: 200 });
-      const reply = langs.length <= 4 ? nl : { text: 'Aimable search', language: 'en', language_probability: 0.9, duration: 1.5, segments: [] };
-      return new Response(JSON.stringify(reply), { status: 200 });
-    };
-    const client = new TranscriptionClient({ serviceUrl: 'http://stt.test' });
-    for (let i = 0; i < 4; i++) await client.transcribe(pcm); // 40 Dutch words → locked on nl
-    const out = await client.transcribe(pcm);
-    check('wrong-language window decoded again in the locked language', out.text === 'Aimable, zoek op.' && langs.slice(4).join(',') === ',nl',
-      `${JSON.stringify(out.text)} langs=${JSON.stringify(langs)}`);
-  }
-
   (globalThis as any).fetch = realFetch;
   if (failed) { console.error(`\n❌ stt model: ${failed} check(s) FAILED.`); process.exit(1); }
   console.log('\n✅ stt model (P5, #522): the wire carries the configured model id; unset stays whisper-1.');
