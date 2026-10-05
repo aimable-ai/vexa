@@ -160,6 +160,8 @@ export function createRedisTranscriptSink(opts: RedisTranscriptSinkOptions): Tra
 /** A live transcript client that also exposes connect/quit so the composition root can
  *  lazily connect and tear down. */
 export type LiveRedisTranscriptClient = RedisTranscriptClient & {
+  /** RPUSH + LTRIM to the last `max` + EXPIRE (the meeting chat list, AIM-2283). */
+  appendCapped(key: string, value: string, max: number, ttlSeconds: number): Promise<unknown>;
   connect(): Promise<void>;
   quit(): Promise<void>;
 };
@@ -184,6 +186,10 @@ export function redisClientFrom(redisUrl: string): LiveRedisTranscriptClient {
     async publish(channel, message) {
       await lazy.ensure();
       return client.publish(channel, message);
+    },
+    async appendCapped(key, value, max, ttlSeconds) {
+      await lazy.ensure();
+      return client.multi().rPush(key, value).lTrim(key, -max, -1).expire(key, ttlSeconds).exec();
     },
     async connect() {
       await lazy.ensure();

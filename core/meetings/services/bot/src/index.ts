@@ -14,6 +14,7 @@
  * │    • Pipeline       → capture bridge → @vexa/{gmeet,mixed}-pipeline → @vexa/transcribe-whisper ✅ WIRED (L4 capture · L2/L3 lane)
  * │    • RecordingSink  → per-chunk upload to inv.recordingUploadUrl (master assembled server-side) ✅ WIRED (L4 upload · L3 sink)
  * │    • Speak          → acts.v1 `speak`/`speak_stop` → meeting-UI mic + VM TTS chain          ✅ WIRED (L4)
+ * │    • Chat           → acts.v1 `chat_send` → meeting chat; chat watcher → va:meeting:{id}:chat ✅ WIRED (L4, gmeet/teams)
  * └─ The browser/capture/recording-upload/speak legs are BROWSER- or VM-resident → L4-gated
  *    (proven by the O6 VM run, not unit tests). The lane + assembler cores are L2/L3-proven.
  *
@@ -39,6 +40,7 @@ import { createSttFaultReporter } from './stt-faults.js';
 import { launchBrowser, startCaptureBridge, startRecording, createSpeakController, type BrowserSession, type SpeakController } from './capture-bridge.js';
 import { createRemoteAudioActivityTap, createSilenceAlonenessSource, resolveAloneSilenceWindowMs } from './aloneness.js';
 import { installSignalHandlers } from './signals.js';
+import { createMeetingChat, pageChatOps, type MeetingChat } from './meeting-chat.js';
 import type {
   JoinDriver,
   Pipeline,
@@ -117,12 +119,13 @@ function teeActs(source: ActsSource, voice: (act: Act) => void | Promise<void>):
   };
 }
 
-/** The bot's voice-act handler: route acts.v1 speak / speak_stop to the SpeakController. The
- *  other voice acts (chat/screen/avatar) are out of this increment's scope. */
-function voiceHandler(speak: SpeakController): (act: Act) => Promise<void> {
+/** The bot's voice-act handler: route acts.v1 speak / speak_stop to the SpeakController and
+ *  chat_send to the meeting chat. Screen/avatar acts are out of scope. */
+function voiceHandler(speak: SpeakController, chat: MeetingChat): (act: Act) => Promise<void> {
   return async (act) => {
     if (act.action === 'speak') await speak.speak(act.text, act.voice);
     else if (act.action === 'speak_stop') await speak.stop();
+    else if (act.action === 'chat_send') await chat.send(act.text);
   };
 }
 
@@ -287,14 +290,21 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
         console.error(`[bot] live-pipeline: ${stage} failed (non-fatal, bot stays seated): ${serr(e)}`);
       },
     });
+    // Meeting chat (gmeet/teams): the watcher starts once the bot is in the meeting (pipeline.start
+    // runs post-admission) and never blocks or fails the pipeline.
+    const chat = createMeetingChat({
+      platform: inv.platform, botName: inv.botName, meetingId, redis: transcriptClient, ops: pageChatOps(sess.page, inv.platform),
+    });
     pipeline = {
       ...live,
+      async start() { await live.start(); void chat.start(); },
+      async stop() { chat.stop(); await live.stop(); },
       speakerEvents: () => turnsWithSpeakerIds(live.speakerEvents?.() ?? [], speakerIds),
       participants: speakerIds.participants,
     };
     // Voice: tee acts so `speak`/`speak_stop` reach the SpeakController (gated on voiceAgentEnabled).
     const speak = createSpeakController(session.page, inv);
-    acts = teeActs(liveActs, voiceHandler(speak));
+    acts = teeActs(liveActs, voiceHandler(speak, chat));
   } catch (e) {
     console.error(`[bot] browser launch/capture wiring failed — falling back to clean terminal failed: ${String(e)}`);
     join = noBrowserJoinDriver(String(e));

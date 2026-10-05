@@ -51,6 +51,19 @@ def _decode_claimed(resp) -> "list[tuple[str, dict]]":
     return out
 
 
+def _decode_chat(raw) -> "list[dict]":
+    """Parse the chat list entries (JSON payloads the bot RPUSHes); malformed ones are skipped."""
+    out: list[dict] = []
+    for item in raw or []:
+        try:
+            msg = json.loads(item.decode() if isinstance(item, bytes) else item)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(msg, dict):
+            out.append(msg)
+    return out
+
+
 def _sha(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()
 
@@ -1287,6 +1300,10 @@ class RedisStreamBus:
 
     async def publish(self, channel, data):
         return await self._client.publish(channel, data)
+
+    async def chat_messages(self, meeting_id):
+        """The bot's captured meeting chat (``meeting:{id}:chat_messages``, AIM-2283), oldest first."""
+        return _decode_chat(await self._client.lrange(f"meeting:{meeting_id}:chat_messages", 0, -1))
 
     async def xadd(self, stream, payload):
         """Append one entry to a redis STREAM under the ``payload`` field — the native transcript feed
