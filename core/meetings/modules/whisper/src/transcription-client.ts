@@ -96,6 +96,9 @@ function classifyHttp(status: number, detail?: string): TranscriptionError {
  * Converts Float32Array audio to WAV, sends as multipart form,
  * and returns transcription results.
  */
+/** Dropped text, quoted and capped, for the bot log. */
+const clip = (t: unknown): string => JSON.stringify(String(t ?? '').trim().slice(0, 120));
+
 export class TranscriptionClient {
   private langLock = new LanguageLock();
   private readonly keepTerms: RegExp | undefined;
@@ -287,12 +290,13 @@ export class TranscriptionClient {
       const langProb = Number(data.language_probability ?? 0);
       const known = !!this.keepTerms?.test(String(data.text || ''));
       if (STRICT_GATES && !language && langProb > 0 && langProb < 0.3 && !known) {
-        log(`[STT] dropped window: language ${data.language} prob=${langProb.toFixed(2)} < 0.3`);
+        log(`[STT] dropped window: language ${data.language} prob=${langProb.toFixed(2)} < 0.3: ${clip(data.text)}`);
         return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: data.duration || 0, segments: [] };
       }
       const dur = Number(data.duration || 0);
       const nWords = String(data.text || '').split(/\s+/).filter(Boolean).length;
       if (this.langLock.shouldDrop({ detected: String(data.language || ''), prob: langProb, dur, words: nWords }, language) && !known) {
+        log(`[STT] dropped text: ${clip(data.text)}`);
         return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: dur, segments: [] };
       }
       const segments = allSegments.filter((s: any) => !isLowConfidenceSegment(s));
@@ -300,7 +304,8 @@ export class TranscriptionClient {
         ? segments.map((s: any) => (s.text || '').trim()).filter(Boolean).join(' ')
         : (data.text || '');
       if (allSegments.length && segments.length < allSegments.length) {
-        log(`[STT] dropped ${allSegments.length - segments.length}/${allSegments.length} low-confidence segment(s)`);
+        const lost = allSegments.filter((s: any) => isLowConfidenceSegment(s)).map((s: any) => clip(s.text)).join(' | ');
+        log(`[STT] dropped ${allSegments.length - segments.length}/${allSegments.length} low-confidence segment(s): ${lost}`);
       }
       return {
         text,
