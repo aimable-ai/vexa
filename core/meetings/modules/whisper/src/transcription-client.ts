@@ -44,7 +44,8 @@ export interface TranscriptionClientConfig {
    *  Lower values = more frequent confirmations = faster output. Default: server default (15s) */
   maxSpeechDurationSec?: number;
   /** Known words (the vocabulary hint: "Aimable", the tenant, dictionary terms). A window that
-   *  contains one is never dropped by the language gates — a wake word heard as English survives. */
+   *  contains one plus other words is never dropped by the language gates — a wake word heard as
+   *  English survives. */
   keepTerms?: string[];
   /** Minimum silence duration (ms) for VAD to split segments. Lower = more splits at natural pauses.
    *  Default: server default (160ms). Use ~100ms for more granular segments. */
@@ -125,7 +126,7 @@ export class TranscriptionClient {
     this.maxSpeechDurationSec = config.maxSpeechDurationSec;
     const terms = (config.keepTerms ?? []).map((t) => t.trim()).filter(Boolean);
     this.keepTerms = terms.length
-      ? new RegExp(`(^|[^\\p{L}\\p{N}])(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})($|[^\\p{L}\\p{N}])`, 'iu')
+      ? new RegExp(`(?<![\\p{L}\\p{N}])(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\p{L}\\p{N}])`, 'giu')
       : undefined;
     this.minSilenceDurationMs = config.minSilenceDurationMs;
     this.model = config.model ?? 'whisper-1';
@@ -285,19 +286,22 @@ export class TranscriptionClient {
       // Drop low-confidence (hallucinated / faint-bleed) segments at the source and
       // rebuild the text from what survives, so phantoms never reach the pipeline.
       // If the model returned no segments we can't score, so keep its text as-is.
-      // Strict gates (0.10 parity): an auto-detected language the model itself doubts means the
-      // window was decoded into a guess — unrecoverable text, drop the whole window.
       const langProb = Number(data.language_probability ?? 0);
-      const known = !!this.keepTerms?.test(String(data.text || ''));
-      if (STRICT_GATES && !language && langProb > 0 && langProb < 0.3 && !known) {
-        log(`[STT] dropped window: language ${data.language} prob=${langProb.toFixed(2)} < 0.3: ${clip(data.text)}`);
-        return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: data.duration || 0, segments: [] };
-      }
       const dur = Number(data.duration || 0);
       const segments = allSegments.filter((s: any) => !isLowConfidenceSegment(s));
       const text = allSegments.length
         ? segments.map((s: any) => (s.text || '').trim()).filter(Boolean).join(' ')
         : (data.text || '');
+      // A known word only saves a window that also says something else: near silence decodes to
+      // just the hint ("Aimable.").
+      const rest = this.keepTerms ? String(text).replace(this.keepTerms, ' ') : String(text);
+      const known = rest !== String(text) && /[\p{L}\p{N}]/u.test(rest);
+      // Strict gates (0.10 parity): an auto-detected language the model itself doubts means the
+      // window was decoded into a guess — unrecoverable text, drop the whole window.
+      if (STRICT_GATES && !language && langProb > 0 && langProb < 0.3 && !known) {
+        log(`[STT] dropped window: language ${data.language} prob=${langProb.toFixed(2)} < 0.3: ${clip(data.text)}`);
+        return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: data.duration || 0, segments: [] };
+      }
       if (allSegments.length && segments.length < allSegments.length) {
         const lost = allSegments.filter((s: any) => isLowConfidenceSegment(s)).map((s: any) => clip(s.text)).join(' | ');
         log(`[STT] dropped ${allSegments.length - segments.length}/${allSegments.length} low-confidence segment(s): ${lost}`);
