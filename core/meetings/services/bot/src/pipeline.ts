@@ -543,6 +543,7 @@ export function createTranscribe(inv: Invocation, participantNames?: () => strin
     serviceUrl: inv.transcriptionServiceUrl,
     apiToken: inv.transcriptionServiceToken,
     model: inv.transcriptionModel ?? undefined,
+    keepTerms: (inv.initialPrompt ?? '').split(','),
   });
   const language = inv.language ?? undefined;
   // Whisper has ONE prompt slot and keeps its END: the vocabulary bias leads, participant names
