@@ -176,6 +176,7 @@ async function main(): Promise<void> {
     check('echo of names + previous line is detected',
       isPromptEcho('Ludger Visser Hoe oud is Google?', 'Aimable Ludger Visser Hoe oud is Google?'));
     check('real speech with new words passes', !isPromptEcho('Hoe oud is Microsoft dan?', 'Ludger Visser Hoe oud is Google?'));
+    check('diacritics keep a word one token', !isPromptEcho('Één.', 'Aimable Één keer, één café.'));
     check('short repeats (under 3 words) pass', !isPromptEcho('Ja, ja.', 'Ja, ja.'));
     check('no prompt → never an echo', !isPromptEcho('Pim Verschoor, Aimable Note taker.', undefined));
     const realFetch = globalThis.fetch;

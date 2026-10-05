@@ -559,7 +559,7 @@ export function createTranscribe(inv: Invocation, participantNames?: () => strin
 }
 
 const words = (s: string) =>
-  s.toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
+  s.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
 
 /** AIM-2283: on a near-silent window (e.g. the idle resubmit of an already confirmed tail) Whisper
  *  repeats its own prompt ("Ludger Visser Hoe oud is Google?"). 3+ words, all from the prompt = echo. */
