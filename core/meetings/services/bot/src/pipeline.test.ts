@@ -171,12 +171,14 @@ async function main(): Promise<void> {
     check('no initialPrompt → context alone (wire unchanged)', promptParts[2] === 'zo gezegd.', JSON.stringify(promptParts[2]));
   }
 
-  // ── 4d) AIM-2283: a result made only of prompt words is Whisper echoing its prompt → dropped. ──
+  // ── 4d) AIM-2283: a result that repeats a contiguous run of the prompt is Whisper echoing it → dropped. ──
   {
     check('echo of names + previous line is detected',
       isPromptEcho('Ludger Visser Hoe oud is Google?', 'Aimable Ludger Visser Hoe oud is Google?'));
     check('real speech with new words passes', !isPromptEcho('Hoe oud is Microsoft dan?', 'Ludger Visser Hoe oud is Google?'));
+    check('prompt words in another order pass', !isPromptEcho('Dat is goed ja.', 'Ja, dat is goed.'));
     check('diacritics keep a word one token', !isPromptEcho('Één.', 'Aimable Één keer, één café.'));
+    check('diacritic echo still detected', isPromptEcho('Één café, graag.', 'Aimable Een cafe graag'));
     check('short repeats (under 3 words) pass', !isPromptEcho('Ja, ja.', 'Ja, ja.'));
     check('no prompt → never an echo', !isPromptEcho('Pim Verschoor, Aimable Note taker.', undefined));
     const realFetch = globalThis.fetch;

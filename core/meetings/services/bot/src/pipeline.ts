@@ -562,12 +562,12 @@ const words = (s: string) =>
   s.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
 
 /** AIM-2283: on a near-silent window (e.g. the idle resubmit of an already confirmed tail) Whisper
- *  repeats its own prompt ("Ludger Visser Hoe oud is Google?"). 3+ words, all from the prompt = echo. */
+ *  repeats its own prompt ("Ludger Visser Hoe oud is Google?"). 3+ words that appear as one
+ *  contiguous run in the prompt = echo; the same words in another order are real speech. */
 export function isPromptEcho(text: string, prompt?: string): boolean {
   const said = words(text);
   if (said.length < 3 || !prompt) return false;
-  const known = new Set(words(prompt));
-  return said.every((w) => known.has(w));
+  return ` ${words(prompt).join(' ')} `.includes(` ${said.join(' ')} `);
 }
 
 /**
