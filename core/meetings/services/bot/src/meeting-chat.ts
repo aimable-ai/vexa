@@ -305,7 +305,11 @@ export function pageChatOps(page: Page, platform: string): ChatPageOps {
     async type(text: string) {
       if (!(await open())) return false;
       const box = input();
-      await box.click({ timeout: 3000 });
+      if (!(await box.click({ timeout: 3000 }).then(() => true, () => false))) {
+        // A popup can also appear mid-meeting, over the open panel.
+        await dismissPopup();
+        await box.click({ timeout: 3000 });
+      }
       if (platform === 'teams') {
         // Real key events so Teams' editor registers the text (proven in 0.10).
         await page.keyboard.type(text, { delay: 10 });
