@@ -2,9 +2,9 @@
  * L3 — meeting chat core (AIM-2283). OFFLINE: fake page ops + fake redis.
  *   • chat_send collapses newlines, serializes sends, is ignored before the bot is in the meeting;
  *   • Meet text over 500 chars goes out in parts;
- *   • the watcher seeds on start (no replay), retries a panel that did not open every 10 s,
+ *   • the watcher retries a panel that did not open, seeds on the first open (no replay),
  *     publishes each NEW message once with the exact wire shape, RPUSHes the payload capped + TTL'd, and flags the bot's own messages.
- * Run: npx tsx src/meeting-chat.test.ts
+ * Run: pnpm exec tsx src/meeting-chat.test.ts
  */
 import {
   createMeetingChat, chatChannel, chatListKey, CHAT_LIST_MAX, CHAT_LIST_TTL_S,
@@ -121,23 +121,22 @@ async function main(): Promise<void> {
     chat.stop();
   }
 
-  // ── panel blocked at start (popup over the button): retried every 10 s, then publishes ──
+  // ── panel blocked at start: retried every poll; seeded on the first open (no history replay) ──
   {
     const f = fakes();
-    let t = 1_000_000;
-    let opens = 0, canOpen = false;
-    f.ops.open = async () => { opens++; if (!canOpen) throw new Error('click intercepted'); return true; };
-    const chat = createMeetingChat({ platform: 'google_meet', botName: 'Aimable', meetingId: 9, redis: f.redis, ops: f.ops, pollMs: 10, now: () => t, log: () => {} });
+    let canOpen = false, opens = 0;
+    f.ops.open = async () => { opens++; return canOpen; };
+    const chat = createMeetingChat({ platform: 'teams', botName: 'Aimable', meetingId: 9, redis: f.redis, ops: f.ops, pollMs: 10, log: () => {} });
     await chat.start();
+    f.panel.push({ key: 'old', sender: 'Ludger', text: '@aimable from an earlier meeting' });
+    await tick();
+    check('blocked panel: retried on later polls', opens > 1, String(opens));
+    canOpen = true;
+    await tick();
+    check('first open seeds: history is not published', f.published.length === 0, String(f.published.length));
     f.panel.push({ key: 'q1', sender: 'Ludger', text: '@aimable wie is Google?' });
     await tick();
-    check('blocked panel: not retried within 10 s', opens === 1, String(opens));
-    check('blocked panel: nothing published', f.published.length === 0, String(f.published.length));
-    canOpen = true;
-    t += 10_000;
-    await tick();
-    check('blocked panel: retried after 10 s', opens === 2, String(opens));
-    check('message sent while blocked is published once', f.published.length === 1
+    check('message after the first open is published once', f.published.length === 1
       && JSON.parse(f.published[0][1]).payload.text === '@aimable wie is Google?', String(f.published.length));
     chat.stop();
   }

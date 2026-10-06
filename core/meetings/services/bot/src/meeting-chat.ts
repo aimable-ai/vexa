@@ -35,8 +35,6 @@ export const CHAT_LIST_TTL_S = 24 * 60 * 60;
 const OWN_TEXT_WINDOW_MS = 60_000;
 /** Google Meet rejects chat messages over 500 chars, so longer text goes out in parts. */
 const MEET_MAX_CHARS = 500;
-/** A chat panel that did not open (a popup over the button) is tried again this often. */
-const REOPEN_MS = 10_000;
 
 export const chatSupported = (platform: string): boolean => platform === 'google_meet' || platform === 'teams';
 
@@ -87,8 +85,7 @@ export function createMeetingChat(opts: MeetingChatOptions): MeetingChat {
   let started = false;
   let stopped = false;
   let polling = false;
-  let panelOpen = false;
-  let openRetryAt = 0;
+  let seeded = false;
 
   const sentRecently = (text: string): boolean => {
     const cutoff = now() - OWN_TEXT_WINDOW_MS;
@@ -114,26 +111,16 @@ export function createMeetingChat(opts: MeetingChatOptions): MeetingChat {
     }
   };
 
-  /** The panel only renders messages while it is open. */
-  const ensureOpen = async (): Promise<boolean> => {
-    if (panelOpen) return true;
-    if (now() < openRetryAt) return false;
-    try {
-      panelOpen = await ops.open();
-    } catch (e) {
-      log(`chat panel open failed: ${String(e)}`);
-    }
-    if (!panelOpen) openRetryAt = now() + REOPEN_MS;
-    else if (openRetryAt) log('chat panel open');
-    return panelOpen;
-  };
-
   const poll = async (): Promise<void> => {
     if (polling || stopped) return;
     polling = true;
     try {
-      if (!(await ensureOpen())) return;
-      for (const m of await ops.scrape()) {
+      // The panel only renders messages while open; a failed open is retried on the next poll.
+      if (!(await ops.open())) return;
+      const messages = await ops.scrape();
+      // Seed on the first open: only messages that appear after it are published (no history replay).
+      if (!seeded) { for (const m of messages) seen.add(m.key); seeded = true; return; }
+      for (const m of messages) {
         if (seen.has(m.key)) continue;
         seen.add(m.key);
         await publish(m);
@@ -167,14 +154,7 @@ export function createMeetingChat(opts: MeetingChatOptions): MeetingChat {
     async start(): Promise<void> {
       if (started || !chatSupported(platform)) return;
       started = true;
-      try {
-        // Seed: only messages that appear after the bot joined are published. When the panel
-        // opens later, the messages it shows then were sent after the join and are published.
-        if (await ensureOpen()) for (const m of await ops.scrape()) seen.add(m.key);
-        else log(`chat panel did not open; retrying every ${REOPEN_MS / 1000} s`);
-      } catch (e) {
-        log(`watcher start failed: ${String(e)}`);
-      }
+      await poll();
       if (stopped) return;
       timer = setInterval(() => { void poll(); }, opts.pollMs ?? 2000);
       timer.unref?.();
@@ -284,12 +264,12 @@ export function pageChatOps(page: Page, platform: string): ChatPageOps {
   const input = () => page.locator(sel.input.join(', ')).first();
   const inputVisible = () => input().isVisible().catch(() => false);
 
-  const clickChatButton = async (): Promise<boolean> => {
+  const chatButton = async () => {
     for (const s of sel.button) {
       const btn = page.locator(s).first();
-      if (await btn.isVisible().catch(() => false)) return btn.click({ timeout: 3000 }).then(() => true, () => false);
+      if (await btn.isVisible().catch(() => false)) return btn;
     }
-    return false;
+    return null;
   };
 
   const dismissPopup = async (): Promise<void> => {
@@ -298,16 +278,23 @@ export function pageChatOps(page: Page, platform: string): ChatPageOps {
     else await page.keyboard.press('Escape').catch(() => {});
   };
 
-  const open = async (): Promise<boolean> => {
+  const openPanel = async (): Promise<boolean> => {
     if (page.isClosed()) return false;
     // The chat button toggles: only click when the input is not already showing.
     if (await inputVisible()) return true;
-    if (!(await clickChatButton())) {
+    const btn = await chatButton();
+    if (!btn) return false;
+    if (!(await btn.click({ timeout: 3000 }).then(() => true, () => false))) {
+      // Something covers the button (a popup after the join): close it, click again.
       await dismissPopup();
-      await clickChatButton();
+      await btn.click({ timeout: 3000 }).catch(() => {});
     }
     return input().waitFor({ state: 'visible', timeout: 3000 }).then(() => true, () => false);
   };
+
+  // The watcher and a send can open at the same time; a second click would close the panel again.
+  let opening: Promise<boolean> | null = null;
+  const open = (): Promise<boolean> => (opening ??= openPanel().finally(() => { opening = null; }));
 
   return {
     open,
