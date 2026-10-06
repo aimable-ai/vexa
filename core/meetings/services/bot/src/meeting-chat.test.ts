@@ -2,9 +2,9 @@
  * L3 — meeting chat core (AIM-2283). OFFLINE: fake page ops + fake redis.
  *   • chat_send collapses newlines, serializes sends, is ignored before the bot is in the meeting;
  *   • Meet text over 500 chars goes out in parts;
- *   • the watcher seeds on start (no replay), publishes each NEW message once with the exact wire
- *     shape, RPUSHes the payload capped + TTL'd, and flags the bot's own messages.
- * Run: npx tsx src/meeting-chat.test.ts
+ *   • the watcher retries a panel that did not open, seeds on the first open (no replay),
+ *     publishes each NEW message once with the exact wire shape, RPUSHes the payload capped + TTL'd, and flags the bot's own messages.
+ * Run: pnpm exec tsx src/meeting-chat.test.ts
  */
 import {
   createMeetingChat, chatChannel, chatListKey, CHAT_LIST_MAX, CHAT_LIST_TTL_S,
@@ -118,6 +118,26 @@ async function main(): Promise<void> {
     const last = JSON.parse(f.published[f.published.length - 1][1]).payload;
     check('text match expires after 60 s', last.sender === 'Carol' && last.is_from_bot === false, JSON.stringify(last));
     check('no duplicates', f.published.length === 4, String(f.published.length));
+    chat.stop();
+  }
+
+  // ── panel blocked at start: retried every poll; seeded on the first open (no history replay) ──
+  {
+    const f = fakes();
+    let canOpen = false, opens = 0;
+    f.ops.open = async () => { opens++; return canOpen; };
+    const chat = createMeetingChat({ platform: 'teams', botName: 'Aimable', meetingId: 9, redis: f.redis, ops: f.ops, pollMs: 10, log: () => {} });
+    await chat.start();
+    f.panel.push({ key: 'old', sender: 'Ludger', text: '@aimable from an earlier meeting' });
+    await tick();
+    check('blocked panel: retried on later polls', opens > 1, String(opens));
+    canOpen = true;
+    await tick();
+    check('first open seeds: history is not published', f.published.length === 0, String(f.published.length));
+    f.panel.push({ key: 'q1', sender: 'Ludger', text: '@aimable wie is Google?' });
+    await tick();
+    check('message after the first open is published once', f.published.length === 1
+      && JSON.parse(f.published[0][1]).payload.text === '@aimable wie is Google?', String(f.published.length));
     chat.stop();
   }
 

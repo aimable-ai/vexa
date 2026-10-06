@@ -85,6 +85,7 @@ export function createMeetingChat(opts: MeetingChatOptions): MeetingChat {
   let started = false;
   let stopped = false;
   let polling = false;
+  let seeded = false;
 
   const sentRecently = (text: string): boolean => {
     const cutoff = now() - OWN_TEXT_WINDOW_MS;
@@ -114,7 +115,12 @@ export function createMeetingChat(opts: MeetingChatOptions): MeetingChat {
     if (polling || stopped) return;
     polling = true;
     try {
-      for (const m of await ops.scrape()) {
+      // The panel only renders messages while open; a failed open is retried on the next poll.
+      if (!(await ops.open())) return;
+      const messages = await ops.scrape();
+      // Seed on the first open: only messages that appear after it are published (no history replay).
+      if (!seeded) { for (const m of messages) seen.add(m.key); seeded = true; return; }
+      for (const m of messages) {
         if (seen.has(m.key)) continue;
         seen.add(m.key);
         await publish(m);
@@ -148,13 +154,7 @@ export function createMeetingChat(opts: MeetingChatOptions): MeetingChat {
     async start(): Promise<void> {
       if (started || !chatSupported(platform)) return;
       started = true;
-      try {
-        if (!(await ops.open())) log('chat panel did not open; will retry on first send');
-        // Seed: only messages that appear after the bot joined are published.
-        for (const m of await ops.scrape()) seen.add(m.key);
-      } catch (e) {
-        log(`watcher start failed: ${String(e)}`);
-      }
+      await poll();
       if (stopped) return;
       timer = setInterval(() => { void poll(); }, opts.pollMs ?? 2000);
       timer.unref?.();
@@ -181,6 +181,9 @@ const SELECTORS = {
     input: ['[data-tid="ckeditor"][contenteditable="true"]', '[contenteditable="true"][aria-label*="message" i]', '[contenteditable="true"][data-tid*="message"]', 'div[role="textbox"][contenteditable="true"]'],
   },
 } as const;
+
+/** Info popups that cover the meeting after the join (Meet: "Others may see your video differently"). */
+const POPUP_DISMISS = '[role="dialog"] button:has-text("Got it"), [role="dialog"] button:has-text("Dismiss"), [role="dialog"] button:has-text("Close")';
 
 /** Google Meet: messages carry data-message-id; sender sits in a sibling header (.poVWob). */
 function scrapeMeet(): ScrapedMessage[] {
@@ -261,19 +264,37 @@ export function pageChatOps(page: Page, platform: string): ChatPageOps {
   const input = () => page.locator(sel.input.join(', ')).first();
   const inputVisible = () => input().isVisible().catch(() => false);
 
-  const open = async (): Promise<boolean> => {
+  const chatButton = async () => {
+    for (const s of sel.button) {
+      const btn = page.locator(s).first();
+      if (await btn.isVisible().catch(() => false)) return btn;
+    }
+    return null;
+  };
+
+  const dismissPopup = async (): Promise<void> => {
+    const btn = page.locator(POPUP_DISMISS).first();
+    if (await btn.isVisible().catch(() => false)) await btn.click({ timeout: 2000 }).catch(() => {});
+    else await page.keyboard.press('Escape').catch(() => {});
+  };
+
+  const openPanel = async (): Promise<boolean> => {
     if (page.isClosed()) return false;
     // The chat button toggles: only click when the input is not already showing.
     if (await inputVisible()) return true;
-    for (const s of sel.button) {
-      const btn = page.locator(s).first();
-      if (await btn.isVisible().catch(() => false)) {
-        await btn.click({ timeout: 3000 });
-        break;
-      }
+    const btn = await chatButton();
+    if (!btn) return false;
+    if (!(await btn.click({ timeout: 3000 }).then(() => true, () => false))) {
+      // Something covers the button (a popup after the join): close it, click again.
+      await dismissPopup();
+      await btn.click({ timeout: 3000 }).catch(() => {});
     }
     return input().waitFor({ state: 'visible', timeout: 3000 }).then(() => true, () => false);
   };
+
+  // The watcher and a send can open at the same time; a second click would close the panel again.
+  let opening: Promise<boolean> | null = null;
+  const open = (): Promise<boolean> => (opening ??= openPanel().finally(() => { opening = null; }));
 
   return {
     open,
