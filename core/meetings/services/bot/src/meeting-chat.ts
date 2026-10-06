@@ -35,6 +35,8 @@ export const CHAT_LIST_TTL_S = 24 * 60 * 60;
 const OWN_TEXT_WINDOW_MS = 60_000;
 /** Google Meet rejects chat messages over 500 chars, so longer text goes out in parts. */
 const MEET_MAX_CHARS = 500;
+/** A chat panel that did not open (a popup over the button) is tried again this often. */
+const REOPEN_MS = 10_000;
 
 export const chatSupported = (platform: string): boolean => platform === 'google_meet' || platform === 'teams';
 
@@ -85,6 +87,8 @@ export function createMeetingChat(opts: MeetingChatOptions): MeetingChat {
   let started = false;
   let stopped = false;
   let polling = false;
+  let panelOpen = false;
+  let openRetryAt = 0;
 
   const sentRecently = (text: string): boolean => {
     const cutoff = now() - OWN_TEXT_WINDOW_MS;
@@ -110,10 +114,25 @@ export function createMeetingChat(opts: MeetingChatOptions): MeetingChat {
     }
   };
 
+  /** The panel only renders messages while it is open. */
+  const ensureOpen = async (): Promise<boolean> => {
+    if (panelOpen) return true;
+    if (now() < openRetryAt) return false;
+    try {
+      panelOpen = await ops.open();
+    } catch (e) {
+      log(`chat panel open failed: ${String(e)}`);
+    }
+    if (!panelOpen) openRetryAt = now() + REOPEN_MS;
+    else if (openRetryAt) log('chat panel open');
+    return panelOpen;
+  };
+
   const poll = async (): Promise<void> => {
     if (polling || stopped) return;
     polling = true;
     try {
+      if (!(await ensureOpen())) return;
       for (const m of await ops.scrape()) {
         if (seen.has(m.key)) continue;
         seen.add(m.key);
@@ -149,9 +168,10 @@ export function createMeetingChat(opts: MeetingChatOptions): MeetingChat {
       if (started || !chatSupported(platform)) return;
       started = true;
       try {
-        if (!(await ops.open())) log('chat panel did not open; will retry on first send');
-        // Seed: only messages that appear after the bot joined are published.
-        for (const m of await ops.scrape()) seen.add(m.key);
+        // Seed: only messages that appear after the bot joined are published. When the panel
+        // opens later, the messages it shows then were sent after the join and are published.
+        if (await ensureOpen()) for (const m of await ops.scrape()) seen.add(m.key);
+        else log(`chat panel did not open; retrying every ${REOPEN_MS / 1000} s`);
       } catch (e) {
         log(`watcher start failed: ${String(e)}`);
       }
@@ -181,6 +201,9 @@ const SELECTORS = {
     input: ['[data-tid="ckeditor"][contenteditable="true"]', '[contenteditable="true"][aria-label*="message" i]', '[contenteditable="true"][data-tid*="message"]', 'div[role="textbox"][contenteditable="true"]'],
   },
 } as const;
+
+/** Info popups that cover the meeting after the join (Meet: "Others may see your video differently"). */
+const POPUP_DISMISS = '[role="dialog"] button:has-text("Got it"), [role="dialog"] button:has-text("Dismiss"), [role="dialog"] button:has-text("Close")';
 
 /** Google Meet: messages carry data-message-id; sender sits in a sibling header (.poVWob). */
 function scrapeMeet(): ScrapedMessage[] {
@@ -261,16 +284,27 @@ export function pageChatOps(page: Page, platform: string): ChatPageOps {
   const input = () => page.locator(sel.input.join(', ')).first();
   const inputVisible = () => input().isVisible().catch(() => false);
 
+  const clickChatButton = async (): Promise<boolean> => {
+    for (const s of sel.button) {
+      const btn = page.locator(s).first();
+      if (await btn.isVisible().catch(() => false)) return btn.click({ timeout: 3000 }).then(() => true, () => false);
+    }
+    return false;
+  };
+
+  const dismissPopup = async (): Promise<void> => {
+    const btn = page.locator(POPUP_DISMISS).first();
+    if (await btn.isVisible().catch(() => false)) await btn.click({ timeout: 2000 }).catch(() => {});
+    else await page.keyboard.press('Escape').catch(() => {});
+  };
+
   const open = async (): Promise<boolean> => {
     if (page.isClosed()) return false;
     // The chat button toggles: only click when the input is not already showing.
     if (await inputVisible()) return true;
-    for (const s of sel.button) {
-      const btn = page.locator(s).first();
-      if (await btn.isVisible().catch(() => false)) {
-        await btn.click({ timeout: 3000 });
-        break;
-      }
+    if (!(await clickChatButton())) {
+      await dismissPopup();
+      await clickChatButton();
     }
     return input().waitFor({ state: 'visible', timeout: 3000 }).then(() => true, () => false);
   };
