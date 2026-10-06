@@ -7,6 +7,8 @@ Proves, in isolation from the conformance contract layer, the load-bearing carve
   * verbatim body + status passthrough on success,
   * identity headers injected downstream; client-supplied identity headers stripped.
 """
+import json
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -247,6 +249,18 @@ def test_native_chat_read_forwards_to_meeting_api():
     assert r.status_code == 200
     assert downstream.last["method"] == "GET"
     assert downstream.last["url"].endswith("/bots/google_meet/abc-defg-hij/chat")
+
+
+def test_native_chat_send_forwards_to_meeting_api():
+    """AIM-2283: POST /bots/{platform}/{native}/chat forwards body + status (202) to meeting-api."""
+    downstream = FakeDownstream(status_code=202, body={"status": "queued"})
+    client, _ = _client(downstream=downstream)
+    r = client.post("/bots/teams/123/chat", headers=AUTH, json={"text": "hi"})
+    assert r.status_code == 202
+    assert r.json() == {"status": "queued"}
+    assert downstream.last["method"] == "POST"
+    assert downstream.last["url"].endswith("/bots/teams/123/chat")
+    assert json.loads(downstream.last["content"]) == {"text": "hi"}
 
 
 def test_recording_download_alias_forwards_to_raw():

@@ -684,3 +684,8 @@ class FakeRedisBus:
     async def publish(self, channel, data):
         self.published.append((channel, data))
         return await self._client.publish(channel, data)
+
+    async def chat_messages(self, meeting_id):
+        """Mirror of ``RedisStreamBus.chat_messages`` over fakeredis."""
+        from .adapters import _decode_chat
+        return _decode_chat(await self._client.lrange(f"meeting:{meeting_id}:chat_messages", 0, -1))

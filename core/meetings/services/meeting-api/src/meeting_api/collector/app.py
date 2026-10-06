@@ -642,12 +642,8 @@ def build_router(
         })
 
     # --- GET /bots/{platform}/{native_meeting_id}/chat (#579 C3, sealed api.v1 ChatMessagesResponse).
-    # Thin HONEST restore: the route + owner boundary are real (unowned/unknown native → 404), but
-    # 0.12 does not PERSIST in-meeting chat server-side (chat frames flow live over the va:…:chat WS
-    # channel and are not stored), so the captured-message list is always empty until a chat-capture
-    # backend lands. The response conforms to the sealed shape; the empty list is the truthful state,
-    # not a fabricated one. The POST (send) half is a SIGNED GAP — see the PR (no bot-command backend
-    # in the 0.12 core). ---
+    # Owner boundary real (unowned/unknown native → 404). Messages are the bot's chat watcher output,
+    # kept in the capped redis list ``meeting:{id}:chat_messages`` (AIM-2283); empty when none. ---
     @router.get("/bots/{platform}/{native_meeting_id}/chat")
     async def read_meeting_chat(
         platform: str,
@@ -661,7 +657,54 @@ def build_router(
                 status_code=404,
                 detail=f"Meeting not found for platform {platform} and ID {native_meeting_id}",
             )
-        return JSONResponse(content={"messages": []})
+        reader = getattr(redis, "chat_messages", None)
+        messages = await reader(meeting_id) if reader is not None else []
+        return JSONResponse(content={"messages": messages})
+
+    # --- POST /bots/{platform}/{native_meeting_id}/chat (AIM-2283): queue a message for the bot to
+    # type into the meeting chat. Owner-scoped; publishes acts.v1 ``chat_send`` on the bot's command
+    # channel (same bus as the stop route's ``leave``). 409 when no bot is active in the meeting. ---
+    @router.post("/bots/{platform}/{native_meeting_id}/chat", status_code=202)
+    async def send_meeting_chat(
+        platform: str,
+        native_meeting_id: str,
+        request: Request,
+        x_user_id: Optional[str] = Header(default=None),
+    ):
+        import json as _json
+
+        user_id = _resolve_user_id(x_user_id)
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(status_code=422, detail="invalid JSON body")
+        text = payload.get("text") if isinstance(payload, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            raise HTTPException(status_code=422, detail="text must be a non-empty string")
+        if len(text) > 2000:
+            raise HTTPException(status_code=422, detail="text must be at most 2000 characters")
+        owned = [
+            m for m in await store.list_meetings(user_id, platform=platform)
+            if not m.get("shared") and m.get("platform") == platform
+            and m.get("native_meeting_id") == native_meeting_id
+        ]
+        if not owned:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Meeting not found for platform {platform} and ID {native_meeting_id}",
+            )
+        active = next((m for m in owned if m.get("status") == "active"), None)
+        if active is None:
+            raise HTTPException(status_code=409, detail="No active bot in this meeting")
+        meeting_id = active.get("id")
+        try:
+            await redis.publish(
+                f"bot_commands:meeting:{meeting_id}",
+                _json.dumps({"action": "chat_send", "text": text, "meeting_id": meeting_id}),
+            )
+        except Exception as e:  # noqa: BLE001 — redis down → narrow, retryable
+            raise HTTPException(status_code=503, detail="bot command bus (redis) unavailable") from e
+        return JSONResponse(status_code=202, content={"status": "queued"})
 
     # --- POST /meetings/{platform}/{native_meeting_id}/workspace → BIND the meeting to a shared workspace
     # (meetings.data.workspace_id). Owner-scoped. Members of that workspace can then subscribe to this

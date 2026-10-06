@@ -260,7 +260,7 @@ Beyond the checklist (all confirmed against 0.12 code):
 | zoom without `meeting_url` | 422 | send the URL |
 | `PUT /user/transcription` `wss://` | http(s)-only validator | tenant backend (AIM-1507) whisper-only; live engines via per-space per-request override |
 | `/v1/audio/transcriptions` dictation | no gateway route | push-to-talk breaks; add fork route or hit whisper LB directly |
-| `PUT /bots/{p}/{n}/config`, `/speak`, `/chat`, `/screen`, `/avatar`, `DELETE /recordings/{id}` | 404 / KNOWN_GAPS | language change, nudge, recording delete dead (mostly warning-only) |
+| `PUT /bots/{p}/{n}/config`, `/speak`, `/screen`, `/avatar`, `DELETE /recordings/{id}` (`/chat` send+read done in AIM-2283, gmeet/teams) | 404 / KNOWN_GAPS | language change, nudge, recording delete dead (mostly warning-only) |
 | `PATCH /meetings {name,notes}` | accepts `title, scheduled_at, meeting_url, workspace_id, auto_join` | map name→title |
 | `GET /meetings` list `status_transition` | stripped from list rows | use `GET /meetings/{id}` |
 | `health_check` → `GET /admin/users` | doesn't exist | use `/health` |

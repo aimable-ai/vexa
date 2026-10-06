@@ -43,6 +43,10 @@ export interface TranscriptionClientConfig {
   /** Max speech segment duration in seconds. Whisper forces a segment split at this length.
    *  Lower values = more frequent confirmations = faster output. Default: server default (15s) */
   maxSpeechDurationSec?: number;
+  /** Known words (the vocabulary hint: "Aimable", the tenant, dictionary terms). A window that
+   *  contains one plus other words is never dropped by the language gates — a wake word heard as
+   *  English survives. */
+  keepTerms?: string[];
   /** Minimum silence duration (ms) for VAD to split segments. Lower = more splits at natural pauses.
    *  Default: server default (160ms). Use ~100ms for more granular segments. */
   minSilenceDurationMs?: number;
@@ -93,8 +97,12 @@ function classifyHttp(status: number, detail?: string): TranscriptionError {
  * Converts Float32Array audio to WAV, sends as multipart form,
  * and returns transcription results.
  */
+/** Dropped text, quoted and capped, for the bot log. */
+const clip = (t: unknown): string => JSON.stringify(String(t ?? '').trim().slice(0, 120));
+
 export class TranscriptionClient {
   private langLock = new LanguageLock();
+  private readonly keepTerms: RegExp | undefined;
   private serviceUrl: string;
   private apiToken: string | undefined;
   private maxRetries: number;
@@ -116,6 +124,10 @@ export class TranscriptionClient {
     this.requestTimeoutMs = config.requestTimeoutMs ?? 30000;
     this.sampleRate = config.sampleRate ?? 16000;
     this.maxSpeechDurationSec = config.maxSpeechDurationSec;
+    const terms = (config.keepTerms ?? []).map((t) => t.trim()).filter(Boolean);
+    this.keepTerms = terms.length
+      ? new RegExp(`(?<![\\p{L}\\p{N}])(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\p{L}\\p{N}])`, 'giu')
+      : undefined;
     this.minSilenceDurationMs = config.minSilenceDurationMs;
     this.model = config.model ?? 'whisper-1';
   }
@@ -274,24 +286,31 @@ export class TranscriptionClient {
       // Drop low-confidence (hallucinated / faint-bleed) segments at the source and
       // rebuild the text from what survives, so phantoms never reach the pipeline.
       // If the model returned no segments we can't score, so keep its text as-is.
-      // Strict gates (0.10 parity): an auto-detected language the model itself doubts means the
-      // window was decoded into a guess — unrecoverable text, drop the whole window.
       const langProb = Number(data.language_probability ?? 0);
-      if (STRICT_GATES && !language && langProb > 0 && langProb < 0.3) {
-        log(`[STT] dropped window: language ${data.language} prob=${langProb.toFixed(2)} < 0.3`);
-        return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: data.duration || 0, segments: [] };
-      }
       const dur = Number(data.duration || 0);
-      const nWords = String(data.text || '').split(/\s+/).filter(Boolean).length;
-      if (this.langLock.shouldDrop({ detected: String(data.language || ''), prob: langProb, dur, words: nWords }, language)) {
-        return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: dur, segments: [] };
-      }
       const segments = allSegments.filter((s: any) => !isLowConfidenceSegment(s));
       const text = allSegments.length
         ? segments.map((s: any) => (s.text || '').trim()).filter(Boolean).join(' ')
         : (data.text || '');
+      // A known word only saves a window that also says something else: near silence decodes to
+      // just the hint ("Aimable.").
+      const rest = this.keepTerms ? String(text).replace(this.keepTerms, ' ') : String(text);
+      const known = rest !== String(text) && /[\p{L}\p{N}]/u.test(rest);
+      // Strict gates (0.10 parity): an auto-detected language the model itself doubts means the
+      // window was decoded into a guess — unrecoverable text, drop the whole window.
+      if (STRICT_GATES && !language && langProb > 0 && langProb < 0.3 && !known) {
+        log(`[STT] dropped window: language ${data.language} prob=${langProb.toFixed(2)} < 0.3: ${clip(data.text)}`);
+        return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: data.duration || 0, segments: [] };
+      }
       if (allSegments.length && segments.length < allSegments.length) {
-        log(`[STT] dropped ${allSegments.length - segments.length}/${allSegments.length} low-confidence segment(s)`);
+        const lost = allSegments.filter((s: any) => isLowConfidenceSegment(s)).map((s: any) => clip(s.text)).join(' | ');
+        log(`[STT] dropped ${allSegments.length - segments.length}/${allSegments.length} low-confidence segment(s): ${lost}`);
+      }
+      // Words that survived the confidence filter: junk must not count toward or against a lock.
+      const nWords = String(text).split(/\s+/).filter(Boolean).length;
+      if (this.langLock.shouldDrop({ detected: String(data.language || ''), prob: langProb, dur, words: nWords }, language) && !known) {
+        log(`[STT] dropped text: ${clip(data.text)}`);
+        return { text: '', language: data.language || 'unknown', language_probability: langProb, duration: dur, segments: [] };
       }
       return {
         text,

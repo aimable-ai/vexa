@@ -116,8 +116,8 @@ native_meeting_id)` keying a 0.10 client uses is served by the 0.12 core:
 | `GET /bots/status` | **Yes** — body carries both `running_bots` (0.10) and `running`/`count` (0.12). |
 | `POST /transcripts/{platform}/{native_meeting_id}/share` | **Aliased** to the moved `POST /meetings/{platform}/{native_meeting_id}/share` mint. The response is the capability-token share (`{id, token, mode, expires_at}`), not the 0.10 public-URL `TranscriptShareResponse` — the public-URL-share backend is not in the 0.12 core. |
 | `GET /recordings/{recording_id}/media/{media_file_id}/download` | **Aliased** to the `.../raw` master byte stream (Range-capable). |
-| `GET /bots/{platform}/{native_meeting_id}/chat` | **Restored, empty** — the owner boundary is real; the message list is always empty (0.12 does not persist in-meeting chat server-side; chat flows live over the WS `va:…:chat` channel). |
-| `POST /bots/{platform}/{native_meeting_id}/chat` | **Not implemented** — no bot-command (send) backend in the 0.12 core. |
+| `GET /bots/{platform}/{native_meeting_id}/chat` | **Yes** — the messages the bot captured from the meeting chat (Google Meet, Teams), oldest first, kept 24 h (last 500). Live messages also arrive over the WS `va:…:chat` channel as `chat.new_message`. |
+| `POST /bots/{platform}/{native_meeting_id}/chat` | **Yes** — body `{"text": "…"}`; `202 {"status":"queued"}` and the bot types it into the meeting chat (Google Meet, Teams). `404` unknown meeting, `409` no active bot, `422` empty text. |
 | `POST /meetings/{meeting_id}/transcribe` | **Not implemented** — no on-demand re-transcribe backend in the 0.12 core. |
 
 <Note>

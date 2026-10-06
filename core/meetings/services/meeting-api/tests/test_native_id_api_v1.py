@@ -9,12 +9,16 @@ proving the restored native-keyed surface:
     unknown native → 404; FSM-owned row → 409; a shared (non-owned) row → 404 (never mutable).
   * DELETE /meetings/{platform}/{native} — 200 + row gone; unknown → 404.
   * GET /bots/status — carries BOTH `running` and `running_bots` (sealed golden field), same list.
-  * GET /bots/{platform}/{native}/chat — owner boundary real (unowned → 404); honest empty list.
+  * GET /bots/{platform}/{native}/chat — owner boundary real (unowned → 404); reads the bot's chat list.
+  * POST /bots/{platform}/{native}/chat — publishes acts.v1 chat_send (202); 404 unowned, 409 no
+    active bot, 422 empty or over-long text (AIM-2283).
 
 Negative control for the acceptance table: the same requests on current v0.12.2 (no native route)
 return 404 — these tests are the green half of that red→green pair.
 """
 from __future__ import annotations
+
+import json
 
 from fastapi.testclient import TestClient
 
@@ -142,3 +146,91 @@ def test_chat_read_owned_returns_empty_messages():
 def test_chat_read_unowned_404():
     client, _store = _client()
     assert client.get(f"/bots/{PLAT}/{NATIVE}/chat", headers=H).status_code == 404
+
+
+class _ChatRedis(_CaptureRedis):
+    """Capture publisher + the chat-list read the real ``RedisStreamBus`` exposes."""
+
+    def __init__(self, chat=None):
+        super().__init__()
+        self.chat = chat or {}
+
+    async def chat_messages(self, meeting_id):
+        return self.chat.get(meeting_id, [])
+
+
+def test_chat_read_returns_bot_captured_messages():
+    store = InMemoryTranscriptStore()
+    mid = store.seed_meeting(user_id=USER, platform=PLAT, native_meeting_id=NATIVE, status="active")
+    msg = {"sender": "Bob", "text": "@Aimable hi", "timestamp": 1759660000000, "is_from_bot": False}
+    client = TestClient(create_app(store, redis=_ChatRedis({mid: [msg]})))
+    r = client.get(f"/bots/{PLAT}/{NATIVE}/chat", headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"messages": [msg]}
+
+
+# ---- AIM-2283: native chat SEND --------------------------------------------------------
+
+def _send_client(status="active"):
+    store = InMemoryTranscriptStore()
+    redis = _ChatRedis()
+    mid = store.seed_meeting(user_id=USER, platform=PLAT, native_meeting_id=NATIVE, status=status) if status else None
+    return TestClient(create_app(store, redis=redis)), redis, mid
+
+
+def test_chat_send_publishes_chat_send_command_202():
+    client, redis, mid = _send_client()
+    r = client.post(f"/bots/{PLAT}/{NATIVE}/chat", json={"text": "Budget is 40k"}, headers=H)
+    assert r.status_code == 202, r.text
+    assert r.json() == {"status": "queued"}
+    assert len(redis.published) == 1
+    channel, raw = redis.published[0]
+    assert channel == f"bot_commands:meeting:{mid}"
+    assert json.loads(raw) == {"action": "chat_send", "text": "Budget is 40k", "meeting_id": mid}
+
+
+def test_chat_send_unowned_404():
+    client, redis, _mid = _send_client(status=None)
+    r = client.post(f"/bots/{PLAT}/{NATIVE}/chat", json={"text": "hi"}, headers=H)
+    assert r.status_code == 404
+    assert redis.published == []
+
+
+def test_chat_send_other_users_meeting_404():
+    client, redis, _mid = _send_client()
+    r = client.post(f"/bots/{PLAT}/{NATIVE}/chat", json={"text": "hi"}, headers={"x-user-id": "999"})
+    assert r.status_code == 404
+    assert redis.published == []
+
+
+def test_chat_send_no_active_bot_409():
+    client, redis, _mid = _send_client(status="completed")
+    r = client.post(f"/bots/{PLAT}/{NATIVE}/chat", json={"text": "hi"}, headers=H)
+    assert r.status_code == 409
+    assert redis.published == []
+
+
+def test_chat_send_empty_text_422():
+    client, redis, _mid = _send_client()
+    for body in ({"text": ""}, {"text": "  \n "}, {}, {"text": 5}):
+        r = client.post(f"/bots/{PLAT}/{NATIVE}/chat", json=body, headers=H)
+        assert r.status_code == 422, (body, r.status_code)
+    assert redis.published == []
+
+
+def test_chat_send_too_long_text_422():
+    client, redis, _mid = _send_client()
+    r = client.post(f"/bots/{PLAT}/{NATIVE}/chat", json={"text": "x" * 2001}, headers=H)
+    assert r.status_code == 422
+    assert "2000" in r.json()["detail"]
+    assert redis.published == []
+
+
+async def test_redis_bus_chat_messages_reads_capped_list(fake_redis):
+    """The production bus reads the list the bot RPUSHes; malformed entries are skipped."""
+    from meeting_api.collector.adapters import RedisStreamBus
+
+    msg = {"sender": "Bob", "text": "hi", "timestamp": 1, "is_from_bot": False}
+    await fake_redis.rpush("meeting:5:chat_messages", json.dumps(msg), "not-json")
+    assert await RedisStreamBus(fake_redis).chat_messages(5) == [msg]
+    assert await RedisStreamBus(fake_redis).chat_messages(6) == []
