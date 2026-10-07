@@ -250,7 +250,10 @@ export class SpeakerStreamManager {
    */
   handleTranscriptionResult(speakerId: string, transcript: string, segmentEndSec?: number, segments?: WhisperSegment[], language?: string): boolean {
     const buffer = this.buffers.get(speakerId);
-    if (!buffer) return false;
+    if (!buffer) {
+      if (transcript.trim()) log(`[SpeakerStreams] Transcript for removed stream "${speakerId}" dropped: "${transcript.trim().slice(0, 60)}"`, 'warn');
+      return false;
+    }
 
     buffer.inFlight = false;
 
