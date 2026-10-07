@@ -220,12 +220,15 @@ async function main(): Promise<void> {
     await createTranscribe(baseInv({ transcriptionServiceUrl: 'http://stt.test' }), () => ['Ludger Visser'])(pcm, 'zo gezegd.');
     (globalThis as any).fetch = realFetch;
     check('no names yet → prompt unchanged', promptParts[0] === 'Aimable, Bolsius zo gezegd.', JSON.stringify(promptParts[0]));
-    check('names after the bias, before the context', promptParts[1] === 'Aimable, Bolsius, Joost van Bruggen, Ludger Visser zo gezegd.', JSON.stringify(promptParts[1]));
-    check('names close the prompt when there is no context', promptParts[2] === 'Aimable, Bolsius, Joost van Bruggen, Ludger Visser', JSON.stringify(promptParts[2]));
+    check('names after the bias, before the context', promptParts[1] === 'Aimable, Bolsius, Joost van Bruggen, MavenBlue, Ludger Visser zo gezegd.', JSON.stringify(promptParts[1]));
+    check('names close the prompt when there is no context', promptParts[2] === 'Aimable, Bolsius, Joost van Bruggen, MavenBlue, Ludger Visser', JSON.stringify(promptParts[2]));
     check('names without a bias lead the prompt', promptParts[3] === 'Ludger Visser zo gezegd.', JSON.stringify(promptParts[3]));
 
-    check('hint strips the organisation suffix and dedupes',
-      participantHint(['Joost van Bruggen | MavenBlue', 'Joost van Bruggen', 'Anna de Vries (Bolsius)']) === 'Joost van Bruggen, Anna de Vries');
+    check('hint keeps the "| Org" organisation as its own term and dedupes',
+      participantHint(['Joost van Bruggen | MavenBlue', 'Joost van Bruggen', 'Paul Hagg | MavenBlue', 'Anna de Vries (Bolsius)'])
+        === 'Joost van Bruggen, MavenBlue, Paul Hagg, Anna de Vries');
+    check('other notetaker bots are left out',
+      participantHint(['Pim Verschoor', 'Aimable Note taker', 'Fireflies.ai Notetaker Pim', 'Maarten']) === 'Pim Verschoor, Maarten');
     check('hint with no names is undefined', participantHint([]) === undefined);
     const many = Array.from({ length: 40 }, (_, i) => `Participant Number ${String(i).padStart(2, '0')}`);
     const capped = participantHint(many) ?? '';

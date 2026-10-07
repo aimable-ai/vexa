@@ -517,12 +517,17 @@ function createLiveTranscriberFactory(engine: Exclude<LiveEngine, null>, inv: In
         { url, apiToken: inv.transcriptionServiceToken ?? undefined, model: inv.transcriptionModel ?? undefined, languageRepair: languageRepairFromEnv(), junkPhrases }, cb);
 }
 
-/** Participant names as Whisper hint words: organisation suffix stripped, deduped, comma-separated,
- *  whole names only up to `maxChars`. Undefined when there are none. */
+/** Other meeting bots in the roster ("Fireflies.ai Notetaker Pim", "Aimable Note taker"): never spoken. */
+const NOTETAKER = /\bnote ?taker\b|\bfireflies\b/i;
+
+/** Participant names as Whisper hint words: each name, then its organisation from "Name | Org",
+ *  deduped, comma-separated, whole terms only up to `maxChars`; other notetaker bots left out.
+ *  Undefined when there are none. */
 export function participantHint(names: string[], maxChars = 300): string | undefined {
+  const terms = names.filter((n) => !NOTETAKER.test(n)).flatMap((n) => [bareName(n), n.split(' | ')[1]?.trim() ?? '']);
   const kept: string[] = [];
   let used = 0;
-  for (const name of new Set(names.map(bareName))) {
+  for (const name of new Set(terms)) {
     const cost = name.length + (kept.length ? 2 : 0);
     if (!name || used + cost > maxChars) continue;
     kept.push(name);
@@ -543,7 +548,6 @@ export function createTranscribe(inv: Invocation, participantNames?: () => strin
     serviceUrl: inv.transcriptionServiceUrl,
     apiToken: inv.transcriptionServiceToken,
     model: inv.transcriptionModel ?? undefined,
-    keepTerms: (inv.initialPrompt ?? '').split(','),
   });
   const language = inv.language ?? undefined;
   // Whisper has ONE prompt slot and keeps its END: the vocabulary bias leads, participant names
