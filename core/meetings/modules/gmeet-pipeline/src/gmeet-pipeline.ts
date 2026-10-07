@@ -60,8 +60,11 @@ export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
   const HOP_MERGE = opts.hopMerge ?? (process.env.BOT_GMEET_HOP_MERGE !== '0');
   const mgr = new SpeakerStreamManager(opts.config);
   const inflight = new Set<Promise<void>>();
-  // Per channel: the CURRENT turn's stream key, bound name, last-audio time, turn counter.
-  const chan = new Map<number, { key: string; name: string; startMs: number; lastMs: number; turn: number }>();
+  // Per channel: the CURRENT turn's stream key, bound name, last-audio time. Hop-merge can map one
+  // turn from several channels, so turn numbers live in their own per-channel counter: keys never repeat.
+  const chan = new Map<number, { key: string; name: string; startMs: number; lastMs: number }>();
+  const turnCount = new Map<number, number>();
+  const usedElsewhere = (channel: number, st: object) => [...chan.entries()].some(([c, o]) => c !== channel && o === st);
   const turns: SpeakerTurn[] = [];
   const recordTurn = (st: { name: string; startMs: number; lastMs: number }) => {
     if (st.name !== UNKNOWN) turns.push({ speaker: st.name, start: st.startMs / 1000, end: st.lastMs / 1000 });
@@ -118,7 +121,9 @@ export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
     recordTurn(st);
     const key = st.key;
     void mgr.flushSpeaker(key, true).catch(() => { /* nothing owed */ });
-    const t = setTimeout(() => mgr.removeSpeaker(key), 12000);
+    const t = setTimeout(() => {
+      if (![...chan.values()].some((o) => o.key === key)) mgr.removeSpeaker(key);
+    }, 12000);
     (t as { unref?: () => void }).unref?.();   // don't keep the process alive for cleanup
   };
 
@@ -139,7 +144,7 @@ export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
         if (HOP_MERGE && glowName && glowName !== UNKNOWN) {
           const cont = [...chan.entries()].find(([c, o]) => c !== channel && o.name === glowName && tsMs - o.lastMs <= ONSET_GAP);
           if (cont) {
-            if (st && st !== cont[1]) closeTurn(st);
+            if (st && st !== cont[1] && !usedElsewhere(channel, st)) closeTurn(st);
             st = cont[1];
             chan.set(channel, st);
             st.lastMs = tsMs;
@@ -149,13 +154,11 @@ export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
         }
         // TURN ONSET / rotation: close the previous turn and open a fresh stream named
         // from the glow lit RIGHT NOW (fixed for the turn — held through overlap below).
-        if (st) {
-          const sharedElsewhere = [...chan.entries()].some(([c, o]) => c !== channel && o === st);
-          if (!sharedElsewhere) closeTurn(st);
-        }
-        const turn = (st ? st.turn : 0) + 1;
+        if (st && !usedElsewhere(channel, st)) closeTurn(st);
+        const turn = (turnCount.get(channel) ?? 0) + 1;
+        turnCount.set(channel, turn);
         const key = `ch-${channel}:${turn}`;
-        st = { key, name: glowName || UNKNOWN, startMs: tsMs, lastMs: tsMs, turn };
+        st = { key, name: glowName || UNKNOWN, startMs: tsMs, lastMs: tsMs };
         chan.set(channel, st);
         mgr.addSpeaker(key, st.name);
       } else if (st.name === UNKNOWN && glowName) {
