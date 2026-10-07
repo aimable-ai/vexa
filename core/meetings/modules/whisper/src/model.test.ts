@@ -48,20 +48,24 @@ async function run() {
     check('unconfigured → default whisper-1 (no behavior change)', modelPartOf(body()) === 'whisper-1', `got ${JSON.stringify(modelPartOf(body()))}`);
   }
 
-  // AIM-2344: once locked on nl, a short window in another language is dropped, whatever words it holds.
+  // AIM-2283: once locked on nl, a short window in another language is still dropped, unless it
+  // contains a known word (the vocabulary hint) — "Aimable, …" heard as English survives.
   {
     const replies = [
       ...Array(4).fill({ text: 'een twee drie vier vijf zes zeven acht negen tien', language: 'nl', language_probability: 0.95, duration: 3 }),
-      { text: 'Ludger, Bolsius, Gunter Pim Verschoor, Aimable, Lendahand', language: 'en', language_probability: 0.9, duration: 1.5 },
-      { text: 'Ja, dat klopt', language: 'nl', language_probability: 0.9, duration: 1.0 },
+      { text: 'Aimable, search for the number', language: 'en', language_probability: 0.9, duration: 1.5 },
+      { text: 'Tá bom', language: 'pt', language_probability: 0.6, duration: 0.8 },
+      { text: 'Aimable.', language: 'en', language_probability: 0.9, duration: 0.8 },
     ];
     (globalThis as any).fetch = async () => new Response(JSON.stringify({ ...replies.shift(), segments: [] }), { status: 200 });
-    const client = new TranscriptionClient({ serviceUrl: 'http://stt.test' });
+    const client = new TranscriptionClient({ serviceUrl: 'http://stt.test', keepTerms: ['UntAimable', ' Aimable', ''] });
     for (let i = 0; i < 4; i++) await client.transcribe(pcm); // 40 Dutch words → locked on nl
-    const echo = await client.transcribe(pcm);
-    const dutch = await client.transcribe(pcm);
-    check('short wrong-language window is dropped, hint words or not', echo.text === '', JSON.stringify(echo.text));
-    check('short window in the lock language is kept', dutch.text === 'Ja, dat klopt', JSON.stringify(dutch.text));
+    const kept = await client.transcribe(pcm);
+    const dropped = await client.transcribe(pcm);
+    const hintOnly = await client.transcribe(pcm);
+    check('wrong-language window with a known word is kept', kept.text === 'Aimable, search for the number', JSON.stringify(kept.text));
+    check('wrong-language window without one is still dropped', dropped.text === '', JSON.stringify(dropped.text));
+    check('wrong-language window with only the known word is dropped', hintOnly.text === '', JSON.stringify(hintOnly.text));
   }
 
   (globalThis as any).fetch = realFetch;

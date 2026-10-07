@@ -20,7 +20,6 @@
  * derived. No diarizer, no post-hoc window-match.
  */
 import { SpeakerStreamManager, type SpeakerStreamManagerConfig } from './speaker-streams.js';
-import { stripCountingRuns } from './hallucination-filter.js';
 import type { TranscriptionResult } from '@vexa/transcribe-whisper';
 import type { TranscriptSegment, TranscriptSink } from './contracts/transcript-v1.js';
 
@@ -93,10 +92,8 @@ export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
     const p = (async () => {
       try {
         const r = await opts.transcribe(audio, mgr.getLastConfirmedText(speakerId) || undefined);
-        const raw = r?.segments;
-        const segs = raw?.map((s) => ({ ...s, text: stripCountingRuns(s.text) })).filter((s) => s.text);
-        const text = raw?.length ? segs!.map((s) => s.text).join(' ') : stripCountingRuns(r?.text || '');
-        mgr.handleTranscriptionResult(speakerId, text, raw?.[raw.length - 1]?.end, segs, langOf(r?.language));
+        const segs = r?.segments;
+        mgr.handleTranscriptionResult(speakerId, (r?.text || '').trim(), segs?.[segs.length - 1]?.end, segs, langOf(r?.language));
       } catch (e) {
         opts.onError?.(e);                          // P18: report the fault, don't swallow it…
         mgr.handleTranscriptionResult(speakerId, '');   // …but still free the turn (graceful degrade)

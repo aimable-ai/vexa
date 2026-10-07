@@ -548,6 +548,7 @@ export function createTranscribe(inv: Invocation, participantNames?: () => strin
     serviceUrl: inv.transcriptionServiceUrl,
     apiToken: inv.transcriptionServiceToken,
     model: inv.transcriptionModel ?? undefined,
+    keepTerms: (inv.initialPrompt ?? '').split(','),
   });
   const language = inv.language ?? undefined;
   // Whisper has ONE prompt slot and keeps its END: the vocabulary bias leads, participant names
@@ -569,15 +570,18 @@ const words = (s: string) =>
 /** AIM-2283: on a near-silent window (e.g. the idle resubmit of an already confirmed tail) Whisper
  *  repeats its own prompt ("Ludger Visser Hoe oud is Google?"). 3+ words that appear as one
  *  contiguous run in the prompt = echo; the same words in another order are real speech.
- *  AIM-2344: Whisper also reads the hint words back reordered or garbled ("Pimple, Lendahand,
- *  Ludger, Bolsius, Gunter"), so 3+ words of which at least 60% are hint words is an echo too. */
+ *  Whisper also reads the hint back reordered or garbled ("Pimple, Lendahand, Ludger, Bolsius"):
+ *  4+ telling words of which at least two thirds are hint words is an echo too. A line that starts with
+ *  the wake word is a command; "Aimable" and words of 3 letters or less ("van", "de", "Pim") don't count. */
 export function isPromptEcho(text: string, prompt?: string, hint?: string): boolean {
   const said = words(text);
   if (said.length < 3) return false;
   if (prompt && ` ${words(prompt).join(' ')} `.includes(` ${said.join(' ')} `)) return true;
-  if (!hint) return false;
-  const hintWords = new Set(words(hint));
-  return said.filter((w) => hintWords.has(w)).length / said.length >= 0.6;
+  if (!hint || said[0] === 'aimable') return false;
+  const telling = (w: string) => w.length > 3 && w !== 'aimable';
+  const hintWords = new Set(words(hint).filter(telling));
+  const counted = said.filter(telling);
+  return counted.length >= 4 && counted.filter((w) => hintWords.has(w)).length * 3 >= counted.length * 2;
 }
 
 /**
