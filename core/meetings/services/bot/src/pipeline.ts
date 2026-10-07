@@ -517,12 +517,17 @@ function createLiveTranscriberFactory(engine: Exclude<LiveEngine, null>, inv: In
         { url, apiToken: inv.transcriptionServiceToken ?? undefined, model: inv.transcriptionModel ?? undefined, languageRepair: languageRepairFromEnv(), junkPhrases }, cb);
 }
 
-/** Participant names as Whisper hint words: organisation suffix stripped, deduped, comma-separated,
- *  whole names only up to `maxChars`. Undefined when there are none. */
+/** Other meeting bots in the roster ("Fireflies.ai Notetaker Pim", "Aimable Note taker"): never spoken. */
+const NOTETAKER = /\bnote ?taker\b|\bfireflies\b/i;
+
+/** Participant names as Whisper hint words: each name, then its organisation from "Name | Org",
+ *  deduped, comma-separated, whole terms only up to `maxChars`; other notetaker bots left out.
+ *  Undefined when there are none. */
 export function participantHint(names: string[], maxChars = 300): string | undefined {
+  const terms = names.filter((n) => !NOTETAKER.test(n)).flatMap((n) => [bareName(n), n.split(' | ')[1]?.trim() ?? '']);
   const kept: string[] = [];
   let used = 0;
-  for (const name of new Set(names.map(bareName))) {
+  for (const name of new Set(terms)) {
     const cost = name.length + (kept.length ? 2 : 0);
     if (!name || used + cost > maxChars) continue;
     kept.push(name);
@@ -550,9 +555,10 @@ export function createTranscribe(inv: Invocation, participantNames?: () => strin
   // follow, the lane's continuity context comes last.
   const bias = inv.initialPrompt?.trim() || undefined;
   return async (pcm, prompt) => {
-    const full = [bias, participantHint(participantNames?.() ?? []), prompt].filter(Boolean).join(' ') || undefined;
+    const hint = [bias, participantHint(participantNames?.() ?? [])].filter(Boolean).join(', ') || undefined;
+    const full = [hint, prompt].filter(Boolean).join(' ') || undefined;
     const result = await client.transcribe(pcm, language, full);
-    if (!isPromptEcho(result.text, full)) return result;
+    if (!isPromptEcho(result.text, full, hint)) return result;
     console.log(`[bot] stt: dropped prompt echo "${result.text.trim().slice(0, 80)}"`);
     return { ...result, text: '', segments: [] };
   };
@@ -563,11 +569,19 @@ const words = (s: string) =>
 
 /** AIM-2283: on a near-silent window (e.g. the idle resubmit of an already confirmed tail) Whisper
  *  repeats its own prompt ("Ludger Visser Hoe oud is Google?"). 3+ words that appear as one
- *  contiguous run in the prompt = echo; the same words in another order are real speech. */
-export function isPromptEcho(text: string, prompt?: string): boolean {
+ *  contiguous run in the prompt = echo; the same words in another order are real speech.
+ *  Whisper also reads the hint back reordered or garbled ("Pimple, Lendahand, Ludger, Bolsius"):
+ *  4+ telling words of which at least two thirds are hint words is an echo too. A line that starts with
+ *  the wake word is a command; "Aimable" and words of 3 letters or less ("van", "de", "Pim") don't count. */
+export function isPromptEcho(text: string, prompt?: string, hint?: string): boolean {
   const said = words(text);
-  if (said.length < 3 || !prompt) return false;
-  return ` ${words(prompt).join(' ')} `.includes(` ${said.join(' ')} `);
+  if (said.length < 3) return false;
+  if (prompt && ` ${words(prompt).join(' ')} `.includes(` ${said.join(' ')} `)) return true;
+  if (!hint || said[0] === 'aimable') return false;
+  const telling = (w: string) => w.length > 3 && w !== 'aimable';
+  const hintWords = new Set(words(hint).filter(telling));
+  const counted = said.filter(telling);
+  return counted.length >= 4 && counted.filter((w) => hintWords.has(w)).length * 3 >= counted.length * 2;
 }
 
 /**

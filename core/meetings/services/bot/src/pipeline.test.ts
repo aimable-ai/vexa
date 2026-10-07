@@ -181,6 +181,16 @@ async function main(): Promise<void> {
     check('diacritic echo still detected', isPromptEcho('Één café, graag.', 'Aimable Een cafe graag'));
     check('short repeats (under 3 words) pass', !isPromptEcho('Ja, ja.', 'Ja, ja.'));
     check('no prompt → never an echo', !isPromptEcho('Pim Verschoor, Aimable Note taker.', undefined));
+    // AIM-2344: the hint read back reordered or garbled (meeting 247 and 220) is an echo too…
+    const hint = 'UntAimable, Aimable, Lendahand, Ludger, Bolsius, Gunter, Pim Verschoor, Aimable Note taker, Maarten';
+    for (const echo of ['Pimple, Lendahand, Ludger, Bolsius, Gunter Pimper Verschoor, Aimable Note taker.',
+      'Apoio, Aimable, Lendahand, Ludger, Bolsius, Gunter Pim Thank you.', 'Marend, Ludger, Bolsius, Gunter Pim Verschoor'])
+      check(`garbled hint is an echo: "${echo.slice(0, 40)}…"`, isPromptEcho(echo, undefined, hint));
+    // …while speech that only uses a hint word passes.
+    for (const real of ['Bijvoorbeeld Lendahand is ook DNB gereguleerd.', 'Dank u wel, Lendahand.', 'Ja, Pim Verschoor zei dat ook.',
+      'Aimable, zoek Pim Verschoor.', 'Aimable, zoek Maarten en Gunter Bolsius op.', 'Joost van Bruggen hier.', 'Welkom Maarten, Gunter, Pim.',
+      'Pim Verschoor, Maarten kan ik nu zien, hij zegt bed tot 11 of bed.'])
+      check(`speech with a hint word passes: "${real}"`, !isPromptEcho(real, undefined, hint));
     const realFetch = globalThis.fetch;
     (globalThis as any).fetch = async () => new Response(JSON.stringify({
       text: 'Ludger Visser Hoe oud is Google?', language: 'nl', duration: 1.9,
@@ -212,12 +222,15 @@ async function main(): Promise<void> {
     await createTranscribe(baseInv({ transcriptionServiceUrl: 'http://stt.test' }), () => ['Ludger Visser'])(pcm, 'zo gezegd.');
     (globalThis as any).fetch = realFetch;
     check('no names yet → prompt unchanged', promptParts[0] === 'Aimable, Bolsius zo gezegd.', JSON.stringify(promptParts[0]));
-    check('names after the bias, before the context', promptParts[1] === 'Aimable, Bolsius Joost van Bruggen, Ludger Visser zo gezegd.', JSON.stringify(promptParts[1]));
-    check('names close the prompt when there is no context', promptParts[2] === 'Aimable, Bolsius Joost van Bruggen, Ludger Visser', JSON.stringify(promptParts[2]));
+    check('names after the bias, before the context', promptParts[1] === 'Aimable, Bolsius, Joost van Bruggen, MavenBlue, Ludger Visser zo gezegd.', JSON.stringify(promptParts[1]));
+    check('names close the prompt when there is no context', promptParts[2] === 'Aimable, Bolsius, Joost van Bruggen, MavenBlue, Ludger Visser', JSON.stringify(promptParts[2]));
     check('names without a bias lead the prompt', promptParts[3] === 'Ludger Visser zo gezegd.', JSON.stringify(promptParts[3]));
 
-    check('hint strips the organisation suffix and dedupes',
-      participantHint(['Joost van Bruggen | MavenBlue', 'Joost van Bruggen', 'Anna de Vries (Bolsius)']) === 'Joost van Bruggen, Anna de Vries');
+    check('hint keeps the "| Org" organisation as its own term and dedupes',
+      participantHint(['Joost van Bruggen | MavenBlue', 'Joost van Bruggen', 'Paul Hagg | MavenBlue', 'Anna de Vries (Bolsius)'])
+        === 'Joost van Bruggen, MavenBlue, Paul Hagg, Anna de Vries');
+    check('other notetaker bots are left out',
+      participantHint(['Pim Verschoor', 'Aimable Note taker', 'Fireflies.ai Notetaker Pim', 'Maarten']) === 'Pim Verschoor, Maarten');
     check('hint with no names is undefined', participantHint([]) === undefined);
     const many = Array.from({ length: 40 }, (_, i) => `Participant Number ${String(i).padStart(2, '0')}`);
     const capped = participantHint(many) ?? '';

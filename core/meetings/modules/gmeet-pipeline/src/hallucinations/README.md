@@ -7,7 +7,7 @@ and drops exact matches. The build copies this dir to `dist/hallucinations` so i
 
 Two kinds of file, both loaded and unioned:
 
-- **`<lang>.txt`** — hand-curated, human-verified (e.g. `en/es/pt/ru/ja/tr`).
+- **`<lang>.txt`** — hand-curated, human-verified (e.g. `en/es/pt/ru/ja/tr/de/nl`).
 - **`<lang>.harvested.txt`** — **GENERATED** by `../harvest-hallucinations.ts`: it feeds
   guaranteed-non-speech audio (silence + white noise) through the real STT forcing each language, so
   every transcribed string is a hallucination by construction. Do NOT hand-edit these — re-run the

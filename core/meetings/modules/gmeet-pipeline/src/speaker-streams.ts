@@ -359,6 +359,7 @@ export class SpeakerStreamManager {
 
         if (confirmedSegCount > 0) {
           const baseWindowMs = buffer.windowStartMs;
+          let firstEmittedMs = -1;
           for (let i = 0; i < confirmedSegCount; i++) {
             const seg = segments[i];
             buffer.windowStartMs = baseWindowMs + Math.floor(seg.start * 1000);
@@ -370,9 +371,12 @@ export class SpeakerStreamManager {
             }
             const segmentId = `${buffer.speakerId}:${buffer.sequenceNumber}`;
             this.onSegmentConfirmed(buffer.speakerId, buffer.speakerName, seg.text.trim(), buffer.windowStartMs, segEndMs, segmentId, buffer.lastLanguage);
+            if (firstEmittedMs < 0) firstEmittedMs = buffer.windowStartMs;
             buffer.sequenceNumber++;
             buffer.lastConfirmedText = seg.text.trim();
           }
+          // The window's draft is superseded: withdraw it unless the first confirmed segment took its id.
+          this.clearStaleDraft(buffer, firstEmittedMs);
           const lastConfirmedSeg = segments[confirmedSegCount - 1];
           this.advanceOffset(buffer, lastConfirmedSeg.end);
           buffer.windowStartMs = baseWindowMs + Math.floor(lastConfirmedSeg.end * 1000);
