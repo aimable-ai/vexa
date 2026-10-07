@@ -102,6 +102,8 @@ export function rms(samples: Float32Array): number {
 export class SpeakerStreamManager {
   private buffers: Map<string, SpeakerBuffer> = new Map();
   private timers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  /** Stream keys that received audio after removal — logged once each, never silent. */
+  private droppedKeys: Set<string> = new Set();
   private minAudioDuration: number;
   private submitInterval: number;
   private confirmThreshold: number;
@@ -178,7 +180,13 @@ export class SpeakerStreamManager {
    */
   feedAudio(speakerId: string, audioData: Float32Array, atMs?: number): void {
     const buffer = this.buffers.get(speakerId);
-    if (!buffer) return;
+    if (!buffer) {
+      if (!this.droppedKeys.has(speakerId)) {
+        this.droppedKeys.add(speakerId);
+        log(`[SpeakerStreams] Audio for removed stream "${speakerId}" dropped`, 'warn');
+      }
+      return;
+    }
 
     // Gap guard for batch feeders: turns of one speaker arrive separated by
     // other speakers' turns. Concatenating non-contiguous audio into one
@@ -242,7 +250,10 @@ export class SpeakerStreamManager {
    */
   handleTranscriptionResult(speakerId: string, transcript: string, segmentEndSec?: number, segments?: WhisperSegment[], language?: string): boolean {
     const buffer = this.buffers.get(speakerId);
-    if (!buffer) return false;
+    if (!buffer) {
+      if (transcript.trim()) log(`[SpeakerStreams] Transcript for removed stream "${speakerId}" dropped: "${transcript.trim().slice(0, 60)}"`, 'warn');
+      return false;
+    }
 
     buffer.inFlight = false;
 
