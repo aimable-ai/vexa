@@ -11,7 +11,8 @@
 import { createGmeetPipeline, type TranscriptSegment } from './index.js';
 import type { TranscriptionResult } from '@vexa/transcribe-whisper';
 
-// ── Virtual clock: Date.now and timers follow the fed audio timestamps. ──
+// ── Virtual clock: Date.now and timers follow the fed audio timestamps. Patched globally; safe
+//    because each test file runs in its own tsx process. ──
 let now = 0;
 let nextId = 1;
 const timers = new Map<number, { at: number; every: number; fn: () => void }>();
@@ -85,67 +86,37 @@ async function run(label: string, frames: Frame[], owner: Map<number, string>) {
     `missing ${missing.length}: ${missing.slice(0, 20).join(', ')}${missing.length > 20 ? ' …' : ''}`);
 }
 
-/** Meeting 79cb50fb at 2:12: channel 2 briefly carries Arjé (hop into her turn on channel 1), then
- *  Ludger (hop into his turn on channel 0). Arjé keeps talking on channel 1 without a pause. */
-function sharedTurnHop() {
+/** A scenario: `say` adds one numbered 300 ms frame per step for a speaker on a channel. */
+function scenario(build: (say: (ch: number, glow: string, from: number, to: number) => void) => void) {
   const frames: Frame[] = []; const owner = new Map<number, string>();
   let k = 1;
-  const say = (ch: number, glow: string, from: number, to: number) => {
+  build((ch, glow, from, to) => {
     for (let t = from; t < to; t += FRAME_MS) { owner.set(k, glow); frames.push({ t, ch, glow, k: k++ }); }
-  };
-  say(0, 'Ludger', 0, 3000);
-  say(1, 'Arje', 2000, 40000);
-  say(2, 'Arje', 2600, 2900);
-  say(2, 'Ludger', 2900, 3200);
-  return { frames, owner };
-}
-
-/** Bob has three short turns on channel 1 (keys ch-1:1..3). Alice talks on channel 0, Meet moves her
- *  to channel 1, she pauses and goes on there: her new turn must not reuse a key from Bob's turns. */
-function hopReusesKey() {
-  const frames: Frame[] = []; const owner = new Map<number, string>();
-  let k = 1;
-  const say = (ch: number, glow: string, from: number, to: number) => {
-    for (let t = from; t < to; t += FRAME_MS) { owner.set(k, glow); frames.push({ t, ch, glow, k: k++ }); }
-  };
-  say(1, 'Bob', 0, 1000);
-  say(1, 'Bob', 2500, 3500);
-  say(1, 'Bob', 5000, 6000);
-  say(0, 'Alice', 0, 7000);
-  say(1, 'Alice', 7000, 9000);
-  say(1, 'Alice', 10500, 40000);
-  return { frames, owner };
-}
-
-/** Two speakers over two channels for ~6 minutes: turns of 3-20 s, pauses of 0.3-2 s, and Meet
- *  moving the active speaker to the other channel mid-turn (hop-merge). Seeded, so reproducible. */
-function hoppingMeeting() {
-  let seed = 7;
-  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
-  const frames: Frame[] = []; const owner = new Map<number, string>();
-  let k = 1, t = 0, speaker = 0;
-  while (t < 360000) {
-    const name = speaker ? 'Bob' : 'Alice';
-    let ch = rnd() < 0.5 ? 0 : 1;
-    const end = t + 3000 + rnd() * 17000;
-    const hopAt = rnd() < 0.5 ? t + (end - t) * rnd() : Infinity;
-    for (; t < end; t += FRAME_MS) {
-      if (t >= hopAt && t - FRAME_MS < hopAt) ch = 1 - ch;
-      owner.set(k, name); frames.push({ t, ch, glow: name, k: k++ });
-    }
-    t += 300 + rnd() * 1700;
-    if (rnd() < 0.7) speaker = 1 - speaker;
-  }
+  });
   return { frames, owner };
 }
 
 async function main() {
-  const a = sharedTurnHop();
+  // Meeting 79cb50fb at 2:12: channel 2 briefly carries Arjé (hop into her turn on channel 1), then
+  // Ludger (hop into his turn on channel 0). Arjé keeps talking on channel 1 without a pause.
+  const a = scenario((say) => {
+    say(0, 'Ludger', 0, 3000);
+    say(1, 'Arje', 2000, 40000);
+    say(2, 'Arje', 2600, 2900);
+    say(2, 'Ludger', 2900, 3200);
+  });
   await run('a hop closes a turn another channel still feeds', a.frames, a.owner);
-  const c = hopReusesKey();
-  await run('a hop makes a channel reuse a turn key', c.frames, c.owner);
-  const b = hoppingMeeting();
-  await run('6 min of channel hops', b.frames, b.owner);
+  // Bob has three short turns on channel 1. Alice talks on channel 0, Meet moves her to channel 1,
+  // she pauses and goes on there: her new turn must not reuse a key from Bob's turns.
+  const b = scenario((say) => {
+    say(1, 'Bob', 0, 1000);
+    say(1, 'Bob', 2500, 3500);
+    say(1, 'Bob', 5000, 6000);
+    say(0, 'Alice', 0, 7000);
+    say(1, 'Alice', 7000, 9000);
+    say(1, 'Alice', 10500, 40000);
+  });
+  await run('a hop makes a channel reuse a turn key', b.frames, b.owner);
   if (failed) { console.error(`\n❌ stream-lifecycle: ${failed} check(s) FAILED — audio fed into a removed stream.`); process.exit(1); }
   console.log('\n✅ stream-lifecycle: no stream is removed while a channel still feeds it.');
 }

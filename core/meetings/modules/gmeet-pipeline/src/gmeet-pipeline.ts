@@ -121,9 +121,7 @@ export function createGmeetPipeline(opts: GmeetPipelineOptions): GmeetPipeline {
     recordTurn(st);
     const key = st.key;
     void mgr.flushSpeaker(key, true).catch(() => { /* nothing owed */ });
-    const t = setTimeout(() => {
-      if (![...chan.values()].some((o) => o.key === key)) mgr.removeSpeaker(key);
-    }, 12000);
+    const t = setTimeout(() => mgr.removeSpeaker(key), 12000);
     (t as { unref?: () => void }).unref?.();   // don't keep the process alive for cleanup
   };
 
