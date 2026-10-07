@@ -48,6 +48,22 @@ re:suscr[íi]bete al canal
 # ── pt ──
 re:inscreva-se no canal
 
+# ── nl — subtitle credits and video outros, matched as whole credit lines; never "Dank u wel" or
+#    "Bedankt", which people say ──
+re:^\s*ondertitel(d|ing|s)? (door|ingediend door)\b
+re:amara\.org
+re:^\s*bedankt voor het kijken[.!]?\s*$
+re:^\s*abonneer je op (mijn|het|ons) kanaal[.!]?\s*$
+re:^\s*deze video is gemaakt door de vpro[.!]?\s*$
+re:^\s*tv gelderland( \d{4})?[.!]?\s*$
+
+# ── de ──
+re:^\s*untertitel(ung)? (des|der|von|im auftrag)\b
+re:^\s*vielen dank f(ü|ue)rs zuschauen[.!]?\s*$
+
+# ── a row of only asterisks (Whisper's marker for unintelligible audio) ──
+re:^\s*\*+\s*$
+
 # ── ja ──
 ご視聴ありがとうございました
 ご視聴ありがとうございます

@@ -59,6 +59,10 @@ export interface TeamsCsrcGmeetPipelineOptions {
   onsetGapMs?: number;
   /** Hold a nested new CSRC provisionally before it receives mixed PCM. Default: 1500 ms. */
   flickerHoldMs?: number;
+  /** During overlap only the first source gets the mixed audio, unless it has been active longer than this. Default: 30000 ms. */
+  floorHoldMaxMs?: number;
+  /** Audio a source held back by the floor holder still receives when the floor passes to it. Default: 700 ms. */
+  handoverCatchUpMs?: number;
   /** Maximum Whisper segment overhang past a CSRC ownership edge. Default: 600 ms. */
   ownershipSlackMs?: number;
   /** Persist the latest clean GMeet draft if confirmation has not arrived. Default: 4000 ms. */
@@ -132,15 +136,13 @@ interface PendingDraft {
  * every virtual channel is driven by the faithful shared copy of Google Meet's transcription
  * window. There is no Pyannote, diarization, voiceprint, or Whisper-timestamp ownership here.
  *
- * Teams supplies one decoded server mix, not pre-mix audio per CSRC. Consequently overlap routes
- * the same immutable PCM to each active window. This is deliberately visible in the experiment:
- * whether each window's prompt/continuity makes Whisper follow its established speaker is an
- * empirical property, never claimed as acoustic source separation.
+ * Teams supplies one decoded server mix, not pre-mix audio per CSRC. During overlap the channelizer
+ * routes it only to the source holding the floor (see `floorHoldMaxMs`), so it is transcribed once,
+ * under the speaker who was already talking. This is timing, not acoustic source separation.
  *
- * Time-and-word duplicates across simultaneously active CSRC lanes are detected post-confirm for
- * telemetry. Both rows remain, their public text stays verbatim, and no winner is inferred. The
- * shared GMeet-compatible buffer is unchanged; the deferred embedding resolver is documented in
- * ../TEAMS_CSRC_CONTESTED_TRANSCRIPTS.md.
+ * Where overlap still reaches two lanes (a source past `floorHoldMaxMs`), time-and-word duplicates
+ * are detected post-confirm for telemetry; both rows remain verbatim. The shared GMeet-compatible
+ * buffer is unchanged; an acoustic resolver is described in ../TEAMS_CSRC_CONTESTED_TRANSCRIPTS.md.
  */
 export class TeamsCsrcGmeetPipeline {
   private readonly manager: GmeetCompatibleBuffer;
@@ -202,6 +204,8 @@ export class TeamsCsrcGmeetPipeline {
     this.channelizer = new TeamsCsrcChannelizer({
       lookbackMs: options.lookbackMs,
       flickerHoldMs: options.flickerHoldMs,
+      floorHoldMaxMs: options.floorHoldMaxMs,
+      handoverCatchUpMs: options.handoverCatchUpMs,
       onFrame: (frame) => {
         options.onRoutedFrame?.(frame);
         this.recordRoutedSpan(frame.csrc, frame.tsMs, frame.tsMs + frame.pcm.length / 16_000 * 1000);
