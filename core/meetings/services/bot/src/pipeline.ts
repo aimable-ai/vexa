@@ -550,9 +550,10 @@ export function createTranscribe(inv: Invocation, participantNames?: () => strin
   // follow, the lane's continuity context comes last.
   const bias = inv.initialPrompt?.trim() || undefined;
   return async (pcm, prompt) => {
-    const full = [bias, participantHint(participantNames?.() ?? []), prompt].filter(Boolean).join(' ') || undefined;
+    const hint = [bias, participantHint(participantNames?.() ?? [])].filter(Boolean).join(', ') || undefined;
+    const full = [hint, prompt].filter(Boolean).join(' ') || undefined;
     const result = await client.transcribe(pcm, language, full);
-    if (!isPromptEcho(result.text, full)) return result;
+    if (!isPromptEcho(result.text, full, hint)) return result;
     console.log(`[bot] stt: dropped prompt echo "${result.text.trim().slice(0, 80)}"`);
     return { ...result, text: '', segments: [] };
   };
@@ -563,11 +564,16 @@ const words = (s: string) =>
 
 /** AIM-2283: on a near-silent window (e.g. the idle resubmit of an already confirmed tail) Whisper
  *  repeats its own prompt ("Ludger Visser Hoe oud is Google?"). 3+ words that appear as one
- *  contiguous run in the prompt = echo; the same words in another order are real speech. */
-export function isPromptEcho(text: string, prompt?: string): boolean {
+ *  contiguous run in the prompt = echo; the same words in another order are real speech.
+ *  AIM-2344: Whisper also reads the hint words back reordered or garbled ("Pimple, Lendahand,
+ *  Ludger, Bolsius, Gunter"), so 3+ words of which at least 60% are hint words is an echo too. */
+export function isPromptEcho(text: string, prompt?: string, hint?: string): boolean {
   const said = words(text);
-  if (said.length < 3 || !prompt) return false;
-  return ` ${words(prompt).join(' ')} `.includes(` ${said.join(' ')} `);
+  if (said.length < 3) return false;
+  if (prompt && ` ${words(prompt).join(' ')} `.includes(` ${said.join(' ')} `)) return true;
+  if (!hint) return false;
+  const hintWords = new Set(words(hint));
+  return said.filter((w) => hintWords.has(w)).length / said.length >= 0.6;
 }
 
 /**

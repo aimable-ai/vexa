@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isHallucination } from "./index.js";
+import { stripCountingRuns } from "./hallucination-filter.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -22,6 +23,13 @@ check("short single word → dropped", isHallucination("ok") === true);
 check("long single word kept", isHallucination("internationalization") === false);
 check("clean sentence kept", isHallucination("the quick brown fox jumps over") === false);
 check("repetition loop (3+ ×) → dropped", isHallucination("i love it i love it i love it i love it") === true);
+
+// Counting runs (AIM-2344, meeting 247 at 3:48): the run goes, the speech around it stays.
+check("counting run cut out of real speech",
+  stripCountingRuns("Ik ga in de auto ergens naartoe en dan 2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 35, 32.") === "Ik ga in de auto ergens naartoe en dan");
+check("a few numbers between words stay", stripCountingRuns("Het kost 10.000 euro, ze dachten 15 of 20") === "Het kost 10.000 euro, ze dachten 15 of 20");
+check("five numbers in a row stay", stripCountingRuns("1, 2, 3, 4, 5") === "1, 2, 3, 4, 5");
+check("only a count → empty", stripCountingRuns("1 2 3 4 5 6 7") === "");
 
 // Phrase-list path: a phrase actually in en.txt must be filtered (loaded the same way the brick loads).
 const enPhrases = readFileSync(resolve(here, "hallucinations", "en.txt"), "utf-8")

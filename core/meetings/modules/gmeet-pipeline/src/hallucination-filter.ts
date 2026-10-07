@@ -79,6 +79,13 @@ export function isHallucination(text: string): boolean {
   return false;
 }
 
+/** Six or more bare numbers in a row ("2, 3, 4, 5, 6, 7 …") is Whisper counting on its own: real
+ *  speech names a few numbers between words. The run is cut out; the words around it stay. */
+const COUNTING_RUN = /(?:(?<![\p{L}\p{N}])\d{1,3}[,.]?\s*){6,}/gu;
+export function stripCountingRuns(text: string): string {
+  return text.replace(COUNTING_RUN, ' ').replace(/\s{2,}/g, ' ').trim();
+}
+
 // The low-confidence STT-segment filter (isLowConfidenceSegment) lives in
 // @vexa/transcribe-whisper (src/confidence.ts) — it belongs at the stt.v1 egress,
 // applied to Whisper's raw output before the confirm loop. This module keeps only

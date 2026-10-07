@@ -5,13 +5,15 @@
  *
  *   tsx src/replay-captured-whisper.ts <captured.jsonl> <out.jsonl>
  * Env: WHISPER_URL (default pii LB), WHISPER_TOKEN, LANGUAGE (unset = auto), START/END, SPEED,
- *      BOT_SPEAKER_* (buffer tuning), BOT_GMEET_ONSET_GAP_MS, WHISPER_GATES=strict — same knobs as the bot
+ *      BIAS_PROMPT (the spawn's initialPrompt), NAMES (participants, `|`-separated),
+ *      BOT_SPEAKER_* (buffer tuning), BOT_GMEET_ONSET_GAP_MS, WHISPER_GATES=strict — same knobs as the bot.
+ * STT goes through the bot's own createTranscribe, so hint words, keep terms and the echo filter match production.
  */
 import * as fs from 'node:fs';
 import * as readline from 'node:readline';
 import { createGmeetPipeline } from '@vexa/gmeet-pipeline';
-import { TranscriptionClient } from '@vexa/transcribe-whisper';
-import { speakerStreamConfigFromEnv } from './config.js';
+import { speakerStreamConfigFromEnv, type Invocation } from './config.js';
+import { createTranscribe } from './pipeline.js';
 
 interface Frame { ts: number; speakerIndex: number; speakerName?: string; pcm: Float32Array }
 async function load(path: string, start: number, end: number): Promise<Frame[]> {
@@ -40,15 +42,20 @@ async function main(): Promise<void> {
   console.error(`[replay-whisper] ${frames.length} frames, language=${language ?? 'auto'} slice=${START}-${END}`);
   const out = fs.createWriteStream(outPath);
   const w = (o: object) => out.write(JSON.stringify({ wall: Date.now(), ...o }) + '\n');
-  const client = new TranscriptionClient({ serviceUrl: process.env.WHISPER_URL || 'http://pii.aimable.ai:8083', apiToken: process.env.WHISPER_TOKEN });
+  const names = (process.env.NAMES || '').split('|').filter(Boolean);
+  const stt = createTranscribe({
+    transcriptionServiceUrl: process.env.WHISPER_URL || 'http://pii.aimable.ai:8083',
+    transcriptionServiceToken: process.env.WHISPER_TOKEN,
+    initialPrompt: process.env.BIAS_PROMPT || undefined,
+    language,
+  } as Invocation, () => names);
   let calls = 0, callMs = 0;
   const config = speakerStreamConfigFromEnv();
   const onsetGapMs = Number(process.env.BOT_GMEET_ONSET_GAP_MS) > 0 ? Number(process.env.BOT_GMEET_ONSET_GAP_MS) : undefined;
   console.error(`[replay-whisper] config=${JSON.stringify(config ?? 'defaults')} onsetGapMs=${onsetGapMs ?? 1000} gates=${process.env.WHISPER_GATES || 'strict'} lock=${process.env.WHISPER_LANG_LOCK || 'auto'} hopMerge=${process.env.BOT_GMEET_HOP_MERGE !== '0'}`);
   const pipe = createGmeetPipeline({
     config, onsetGapMs,
-    // BIAS_PROMPT reproduces the bot's vocabulary bias (invocation.initialPrompt): bias leads, continuity follows.
-    transcribe: async (pcm, prompt) => { const t = Date.now(); calls++; try { return await client.transcribe(pcm, language, [process.env.BIAS_PROMPT, prompt].filter(Boolean).join(' ') || undefined); } finally { callMs += Date.now() - t; } },
+    transcribe: async (pcm, prompt) => { const t = Date.now(); calls++; try { return await stt(pcm, prompt); } finally { callMs += Date.now() - t; } },
     sink: {
       segment: (s) => w({ ev: 'confirmed', ch: Number(String(s.speaker_key).split(':')[0]?.replace(/\D/g, '')) || 0, speaker: s.speaker, completed: true, text: s.text, startMs: s.start * 1000, endMs: s.end * 1000, id: s.segment_id, lang: s.language }),
       draft: (s) => w({ ev: 'pending', speaker: s.speaker, text: s.text, startMs: s.start * 1000, endMs: s.end * 1000, id: s.segment_id }),
