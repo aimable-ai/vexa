@@ -21,6 +21,19 @@ export interface TeamsCsrcChannelizerOptions {
    * Default: 1500 ms.
    */
   flickerHoldMs?: number;
+  /**
+   * During overlap only the source that took the floor first receives the mixed audio, so the same
+   * words are not transcribed in two lanes. A source active without a break for longer than this
+   * (a noisy or open microphone) no longer holds the floor and every active lane receives the
+   * audio again. 0 sends overlap audio to every lane. Default: 30000 ms.
+   */
+  floorHoldMaxMs?: number;
+  /**
+   * When the floor passes to a source that was held back, it also receives this much of the audio it
+   * missed (never from before its activation). Teams keeps the previous speaker active for a moment
+   * after they stop, so without it the new speaker's first words are lost. Default: 700 ms.
+   */
+  handoverCatchUpMs?: number;
   onFrame: (frame: TeamsCsrcVirtualFrame) => void;
 }
 
@@ -48,8 +61,9 @@ interface MixedFrame {
  *
  * This class deliberately does not transcribe, name, segment, or infer speakers. It carries the
  * transport's active set onto the audio frames. A downstream per-channel pipeline supplies the
- * GMeet continuity/buffering semantics. During overlap the waveform cannot be separated: every
- * active lane receives the same immutable mixed frame and relies on its own prompt history.
+ * GMeet continuity/buffering semantics. During overlap the waveform cannot be separated, so the
+ * mixed frame goes only to the source that took the floor first; a source active without a break
+ * for longer than `floorHoldMaxMs` does not hold the floor and then every active lane receives it.
  *
  * CSRC events and PCM cross independent page-to-Node callbacks. An activation can therefore arrive
  * after the corresponding PCM. A bounded ring recovers that onset once. `lastEmittedFrame` prevents
@@ -60,6 +74,12 @@ export class TeamsCsrcChannelizer {
   private readonly flickerHoldMs: number;
   private readonly onFrame: TeamsCsrcChannelizerOptions['onFrame'];
   private readonly active = new Set<number>();
+  private readonly floorHoldMaxMs: number;
+  private readonly handoverCatchUpMs: number;
+  /** Active sources that were held back from the last frame because another held the floor. */
+  private readonly heldBack = new Set<number>();
+  /** When each active CSRC's current unbroken activity started (epoch ms). */
+  private readonly activeSince = new Map<number, number>();
   private readonly provisional = new Map<number, number>();
   private readonly seenTracks = new Set<number>();
   private readonly lastEmittedFrame = new Map<number, number>();
@@ -76,6 +96,8 @@ export class TeamsCsrcChannelizer {
   constructor(opts: TeamsCsrcChannelizerOptions) {
     this.lookbackMs = Math.max(0, opts.lookbackMs ?? 600);
     this.flickerHoldMs = Math.max(0, opts.flickerHoldMs ?? 1500);
+    this.floorHoldMaxMs = Math.max(0, opts.floorHoldMaxMs ?? 30_000);
+    this.handoverCatchUpMs = Math.max(0, opts.handoverCatchUpMs ?? 700);
     this.onFrame = opts.onFrame;
   }
 
@@ -92,9 +114,20 @@ export class TeamsCsrcChannelizer {
     const frame: MixedFrame = { id: this.nextFrameId++, pcm, tsMs };
     this.inputFrames++;
     this.ring.push(frame);
-    // A provisional lane needs its entire hold interval plus the pre-event onset lookback.
-    this.evictBefore(tsMs - this.lookbackMs - this.flickerHoldMs);
-    for (const csrc of this.active) this.emit(csrc, frame, false);
+    // A provisional lane needs its entire hold interval plus the pre-event onset lookback; a handover
+    // needs its catch-up.
+    this.evictBefore(tsMs - Math.max(this.lookbackMs + this.flickerHoldMs, this.handoverCatchUpMs));
+    const receivers = this.receivers(tsMs);
+    for (const csrc of receivers) {
+      if (this.heldBack.delete(csrc)) {
+        const floorMs = Math.max((this.activeSince.get(csrc) ?? tsMs) - this.lookbackMs, tsMs - this.handoverCatchUpMs);
+        for (const missed of this.ring) {
+          if (missed.id < frame.id && missed.tsMs >= floorMs) this.emit(csrc, missed, true);
+        }
+      }
+      this.emit(csrc, frame, false);
+    }
+    for (const csrc of this.active) if (!receivers.includes(csrc)) this.heldBack.add(csrc);
   }
 
   recordTransportEvent(ev: TransportEvent): void {
@@ -110,6 +143,8 @@ export class TeamsCsrcChannelizer {
         return;
       }
       this.active.delete(ev.csrc);
+      this.activeSince.delete(ev.csrc);
+      this.heldBack.delete(ev.csrc);
       return;
     }
 
@@ -146,12 +181,24 @@ export class TeamsCsrcChannelizer {
     this.provisional.delete(csrc);
     if (this.active.has(csrc)) return;
     this.active.add(csrc);
+    this.activeSince.set(csrc, sinceMs);
     if (afterHold) this.promotedAfterHold++;
     this.maxConcurrency = Math.max(this.maxConcurrency, this.active.size);
+    // A source that joins while another holds the floor gets audio only once that one goes quiet.
+    if (!this.receivers(sinceMs).includes(csrc)) return;
     const onsetFloor = sinceMs - this.lookbackMs;
     for (const frame of this.ring) {
       if (frame.tsMs >= onsetFloor) this.emit(csrc, frame, true);
     }
+  }
+
+  /** The lanes that receive audio at `nowMs`: the floor holder during overlap, else every active one. */
+  private receivers(nowMs: number): number[] {
+    const active = [...this.active];
+    if (active.length < 2 || this.floorHoldMaxMs === 0) return active;
+    const holder = active.reduce((first, csrc) =>
+      (this.activeSince.get(csrc) ?? 0) < (this.activeSince.get(first) ?? 0) ? csrc : first);
+    return nowMs - (this.activeSince.get(holder) ?? nowMs) <= this.floorHoldMaxMs ? [holder] : active;
   }
 
   private emit(csrc: number, frame: MixedFrame, backfilled: boolean): void {

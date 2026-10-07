@@ -190,6 +190,8 @@ const contestedCallbacks: TeamsCsrcTranscriptSegment[] = [];
 const contestedPipeline = new TeamsCsrcGmeetPipeline({
   lookbackMs: 0,
   flickerHoldMs: 0,
+  // Both lanes must hear the overlap for a duplicate to exist.
+  floorHoldMaxMs: 0,
   onsetGapMs: 1000,
   buffer: { scheduleSubmissions: false, now: () => contestNow, silenceRmsThreshold: 0 },
   onSegment: (segment) => {

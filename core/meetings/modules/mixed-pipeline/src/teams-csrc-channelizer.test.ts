@@ -8,7 +8,7 @@ const check = (name: string, condition: boolean, detail = ''): void => {
 
 const pcm = (marker: number): Float32Array => new Float32Array([marker]);
 const out: TeamsCsrcVirtualFrame[] = [];
-const channelizer = new TeamsCsrcChannelizer({ lookbackMs: 600, flickerHoldMs: 0, onFrame: (frame) => out.push(frame) });
+const channelizer = new TeamsCsrcChannelizer({ lookbackMs: 600, flickerHoldMs: 0, floorHoldMaxMs: 0, onFrame: (frame) => out.push(frame) });
 
 channelizer.feedAudio(pcm(9), 900);
 channelizer.recordTransportEvent({ csrc: 201, active: true, tMs: 1000 });
@@ -49,6 +49,7 @@ check('health exposes the bounded routing surface',
 const smoothed: TeamsCsrcVirtualFrame[] = [];
 const smoother = new TeamsCsrcChannelizer({
   lookbackMs: 600,
+  floorHoldMaxMs: 0,
   flickerHoldMs: 1500,
   onFrame: (frame) => smoothed.push(frame),
 });
@@ -83,6 +84,7 @@ check('flicker decisions are observable',
 const sameTimestampFrames: TeamsCsrcVirtualFrame[] = [];
 const sameTimestamp = new TeamsCsrcChannelizer({
   lookbackMs: 600,
+  floorHoldMaxMs: 0,
   flickerHoldMs: 1500,
   onFrame: (frame) => sameTimestampFrames.push(frame),
 });
@@ -99,6 +101,7 @@ check('same-timestamp owner/flicker false edges cannot backfill the flicker by c
 const handoffFrames: TeamsCsrcVirtualFrame[] = [];
 const handoff = new TeamsCsrcChannelizer({
   lookbackMs: 600,
+  floorHoldMaxMs: 0,
   flickerHoldMs: 1500,
   onFrame: (frame) => handoffFrames.push(frame),
 });
@@ -111,6 +114,34 @@ handoff.feedAudio(pcm(13), 1300);
 check('a surviving handoff promotes on the next PCM frame with its held onset',
   handoffFrames.some((frame) => frame.csrc === 840 && frame.tsMs === 1100 && frame.backfilled),
   JSON.stringify(handoffFrames));
+
+// ── the floor: during overlap only the source that spoke first receives the mixed audio ──
+{
+  const frames: TeamsCsrcVirtualFrame[] = [];
+  const floor = new TeamsCsrcChannelizer({ lookbackMs: 0, flickerHoldMs: 0, floorHoldMaxMs: 30_000, onFrame: (frame) => frames.push(frame) });
+  floor.recordTransportEvent({ csrc: 201, active: true, tMs: 0 });
+  floor.feedAudio(pcm(1), 0);
+  floor.recordTransportEvent({ csrc: 414, active: true, tMs: 1000 });
+  floor.feedAudio(pcm(2), 1000);
+  floor.feedAudio(pcm(9), 1300);   // older than the 700 ms catch-up when the floor passes at 2000
+  floor.recordTransportEvent({ csrc: 201, active: false, tMs: 2000 });
+  floor.feedAudio(pcm(3), 2000);
+  const got = frames.map((f) => `${f.csrc}:${f.pcm[0]}:${f.backfilled ? 'b' : 'l'}`);
+  check('during overlap only the floor holder gets the audio; on handover the other speaker catches up 700 ms',
+    JSON.stringify(got) === JSON.stringify(['201:1:l', '201:2:l', '201:9:l', '414:9:b', '414:3:l']), JSON.stringify(got));
+}
+{
+  // A noisy microphone keeps its source active without a break: it stops holding the floor.
+  const frames: TeamsCsrcVirtualFrame[] = [];
+  const noisy = new TeamsCsrcChannelizer({ lookbackMs: 0, flickerHoldMs: 0, floorHoldMaxMs: 30_000, onFrame: (frame) => frames.push(frame) });
+  noisy.recordTransportEvent({ csrc: 840, active: true, tMs: 0 });
+  noisy.feedAudio(pcm(1), 0);
+  noisy.recordTransportEvent({ csrc: 201, active: true, tMs: 40_000 });
+  noisy.feedAudio(pcm(2), 40_000);
+  const got = frames.filter((f) => f.pcm[0] === 2).map((f) => f.csrc).sort();
+  check('a source active for longer than floorHoldMaxMs does not hold the floor',
+    JSON.stringify(got) === JSON.stringify([201, 840]), JSON.stringify(got));
+}
 
 if (failed > 0) process.exit(1);
 console.log('\n✅ Teams CSRC channelizer routes the active set exactly once.');

@@ -35,6 +35,13 @@ const HALLUC = [
   'Thanks for watching!',
   'ご視聴ありがとうございました',
   'Abone olmayı unutmayın',
+  'Ondertiteling door de Amara.org gemeenschap',
+  'Ondertiteld door de Amara.org gemeenschap',
+  'Bedankt voor het kijken.',
+  'Untertitelung des ZDF, 2020',
+  'Untertitel im Auftrag des ZDF für funk, 2017',
+  '***',
+  ' *** ',
 ];
 /** Real rows the lane published on the m24 Teams tape. None may be suppressed. */
 const REAL = [
@@ -43,6 +50,9 @@ const REAL = [
   'We might just have to deal with that on Teams. Teams is just going to be a hard platform to work with.',
   'is it using the method that I set up for Zoom and Meet?',
   "The latency isn't great though.",
+  'Dank u wel.', 'Bedankt.', 'Bye', 'Doei', 'Ja.',
+  'Bedankt voor het delen van je scherm.',
+  'De ondertiteling van de video staat nog uit.',
 ];
 
 for (const t of HALLUC) check(`suppressed: ${JSON.stringify(t)}`, hallucinationRule(t) !== null);
