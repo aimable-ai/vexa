@@ -30,8 +30,8 @@ export interface TeamsCsrcChannelizerOptions {
   floorHoldMaxMs?: number;
   /**
    * When the floor passes to a source that was held back, it also receives this much of the audio it
-   * missed (never from before its activation). Teams keeps the previous speaker active for a moment
-   * after they stop, so without it the new speaker's first words are lost. Default: 700 ms.
+   * missed (never from before its activation lookback). Teams keeps the previous speaker active for
+   * a moment after they stop, so without it the new speaker's first words are lost. Default: 700 ms.
    */
   handoverCatchUpMs?: number;
   onFrame: (frame: TeamsCsrcVirtualFrame) => void;
@@ -78,8 +78,11 @@ export class TeamsCsrcChannelizer {
   private readonly handoverCatchUpMs: number;
   /** Active sources that were held back from the last frame because another held the floor. */
   private readonly heldBack = new Set<number>();
-  /** When each active CSRC's current unbroken activity started (epoch ms). */
+  /** When each active CSRC's current unbroken activity started (epoch ms); the noisy-mic clock. */
   private readonly activeSince = new Map<number, number>();
+  /** Floor priority: the order in which sources became active here. */
+  private readonly floorOrder = new Map<number, number>();
+  private nextFloorOrder = 0;
   private readonly provisional = new Map<number, number>();
   private readonly seenTracks = new Set<number>();
   private readonly lastEmittedFrame = new Map<number, number>();
@@ -145,6 +148,7 @@ export class TeamsCsrcChannelizer {
       this.active.delete(ev.csrc);
       this.activeSince.delete(ev.csrc);
       this.heldBack.delete(ev.csrc);
+      this.floorOrder.delete(ev.csrc);
       return;
     }
 
@@ -182,6 +186,8 @@ export class TeamsCsrcChannelizer {
     if (this.active.has(csrc)) return;
     this.active.add(csrc);
     this.activeSince.set(csrc, sinceMs);
+    // Rank by when the source actually became active here: a late event stamped earlier must not take the floor.
+    this.floorOrder.set(csrc, this.nextFloorOrder++);
     if (afterHold) this.promotedAfterHold++;
     this.maxConcurrency = Math.max(this.maxConcurrency, this.active.size);
     // A source that joins while another holds the floor gets audio only once that one goes quiet.
@@ -197,7 +203,7 @@ export class TeamsCsrcChannelizer {
     const active = [...this.active];
     if (active.length < 2 || this.floorHoldMaxMs === 0) return active;
     const holder = active.reduce((first, csrc) =>
-      (this.activeSince.get(csrc) ?? 0) < (this.activeSince.get(first) ?? 0) ? csrc : first);
+      (this.floorOrder.get(csrc) ?? 0) < (this.floorOrder.get(first) ?? 0) ? csrc : first);
     return nowMs - (this.activeSince.get(holder) ?? nowMs) <= this.floorHoldMaxMs ? [holder] : active;
   }
 

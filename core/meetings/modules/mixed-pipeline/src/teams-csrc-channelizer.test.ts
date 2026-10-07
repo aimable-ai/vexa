@@ -143,5 +143,47 @@ check('a surviving handoff promotes on the next PCM frame with its held onset',
     JSON.stringify(got) === JSON.stringify([201, 840]), JSON.stringify(got));
 }
 
+// ── the floor with production timing (600 ms lookback, 1500 ms flicker hold, 700 ms catch-up) ──
+const run = (events: Array<[number, number, boolean]>, untilMs: number) => {
+  const frames: TeamsCsrcVirtualFrame[] = [];
+  const ch = new TeamsCsrcChannelizer({ onFrame: (frame) => frames.push(frame) });
+  const queue = events.slice().sort((x, y) => x[0] - y[0]);
+  for (let t = 0; t <= untilMs; t += 100) {
+    while (queue.length && queue[0][0] <= t) {
+      const [tMs, csrc, active] = queue.shift()!;
+      ch.recordTransportEvent({ csrc, active, tMs });
+    }
+    ch.feedAudio(pcm(t), t);
+  }
+  return (csrc: number) => frames.filter((f) => f.csrc === csrc).map((f) => f.tsMs);
+};
+{
+  // A talks from 0, B joins at 2000 (promoted after the hold), A stops at 5000.
+  const got = run([[0, 201, true], [2000, 414, true], [5000, 201, false]], 6000);
+  check('a joiner held behind the floor gets nothing until the holder stops',
+    !got(414).some((t) => t < 4300) && got(201).includes(4900), JSON.stringify(got(414).slice(0, 3)));
+  check('then it catches up the last 700 ms and continues live',
+    got(414)[0] === 4300 && got(414).includes(5000) && got(414).includes(6000), JSON.stringify(got(414).slice(0, 10)));
+}
+{
+  // B's activation arrives after A's but is stamped earlier: A keeps the floor.
+  const frames: TeamsCsrcVirtualFrame[] = [];
+  const ch = new TeamsCsrcChannelizer({ flickerHoldMs: 0, onFrame: (frame) => frames.push(frame) });
+  ch.recordTransportEvent({ csrc: 201, active: true, tMs: 1000 });
+  ch.feedAudio(pcm(1), 1000);
+  ch.recordTransportEvent({ csrc: 414, active: true, tMs: 980 });
+  ch.feedAudio(pcm(2), 1100);
+  ch.feedAudio(pcm(3), 1200);
+  const b = frames.filter((f) => f.csrc === 414).length;
+  check('a late activation stamped earlier does not take the floor', b === 0
+    && frames.filter((f) => f.csrc === 201).length === 3, JSON.stringify(frames.map((f) => `${f.csrc}:${f.pcm[0]}`)));
+}
+{
+  const got = run([[0, 201, true], [500, 414, true], [800, 840, true]], 4000);
+  check('with three active sources only the first gets the overlap',
+    got(201).includes(4000) && !got(414).includes(4000) && !got(840).includes(4000),
+    JSON.stringify([got(414).length, got(840).length]));
+}
+
 if (failed > 0) process.exit(1);
 console.log('\n✅ Teams CSRC channelizer routes the active set exactly once.');

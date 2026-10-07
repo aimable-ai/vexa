@@ -53,6 +53,11 @@ const REAL = [
   'Dank u wel.', 'Bedankt.', 'Bye', 'Doei', 'Ja.',
   'Bedankt voor het delen van je scherm.',
   'De ondertiteling van de video staat nog uit.',
+  'TV Gelderland heeft gisteren over ons bericht.',
+  'Ondertiteling is belangrijk voor toegankelijkheid.',
+  'Ondertiteling van de video staat nog uit.',
+  'Untertitel sind für die Barrierefreiheit wichtig.',
+  'Abonneer je op de nieuwsbrief van het team.',
 ];
 
 for (const t of HALLUC) check(`suppressed: ${JSON.stringify(t)}`, hallucinationRule(t) !== null);
