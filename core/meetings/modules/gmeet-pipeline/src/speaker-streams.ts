@@ -501,8 +501,21 @@ export class SpeakerStreamManager {
     // speaker's buffer start, which makes the speaker-mapper unable to attribute
     // carried words correctly. Direct submission preserves correct timing.
 
-    // Have transcript — emit and reset
+    // Have transcript: the speaker may have gone on after it (a Meet slot change closes the turn
+    // mid-sentence), so decode the whole open window once more. lastTranscript stays the fallback.
     if (buffer.lastTranscript) {
+      if (buffer.inFlight) {
+        buffer.pendingFinal = true;
+        log(`[SpeakerStreams] Close while in-flight for "${buffer.speakerName}" — finalize deferred to response (${unconfirmedSec.toFixed(1)}s audio held)`);
+        return;
+      }
+      if (unconfirmedSec >= MIN_FLUSH_AUDIO_SEC) {
+        buffer.idleSubmitted = true;
+        log(`[SpeakerStreams] Close-submit for "${buffer.speakerName}" (${unconfirmedSec.toFixed(1)}s audio, final decode)`);
+        await this.submitBuffer(buffer);
+        if (buffer.inFlight) return;
+        buffer.idleSubmitted = false;  // skipped as silent
+      }
       this.emitSegment(buffer, buffer.lastTranscript);
       this.fullReset(buffer);
       return;
