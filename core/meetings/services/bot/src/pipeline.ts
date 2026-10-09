@@ -520,7 +520,7 @@ function createLiveTranscriberFactory(engine: Exclude<LiveEngine, null>, inv: In
 /** Other meeting bots in the roster ("Fireflies.ai Notetaker Pim", "Aimable Note taker"): never spoken. */
 const NOTETAKER = /\bnote ?taker\b|\bfireflies\b/i;
 
-/** Participant names as Whisper hint words: each name, then its organisation from "Name | Org",
+/** Participant names as Whisper hint words: each name, then its organisation (the part after the bar in "Name | Org"),
  *  deduped, comma-separated, whole terms only up to `maxChars`; other notetaker bots left out.
  *  Undefined when there are none. */
 export function participantHint(names: string[], maxChars = 300): string | undefined {
