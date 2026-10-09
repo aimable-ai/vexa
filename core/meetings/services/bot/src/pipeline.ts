@@ -580,12 +580,9 @@ export function isPromptEcho(text: string, prompt?: string, hint?: string): bool
   if (prompt && ` ${words(prompt).join(' ')} `.includes(` ${said.join(' ')} `)) return true;
   if (!hint) return false;
   const telling = (w: string) => w.length > 3 && w !== 'aimable';
-  const hintWords = new Set(words(hint).filter(telling));
+  const hintWords = new Set(words(hint));
   const counted = said.filter(telling);
-  if (said[0] === 'aimable') {
-    const all = new Set(words(hint));
-    return counted.length >= 3 && said.slice(1).every((w) => all.has(w));
-  }
+  if (said[0] === 'aimable') return counted.length >= 3 && said.slice(1).every((w) => hintWords.has(w));
   return counted.length >= 4 && counted.filter((w) => hintWords.has(w)).length * 3 >= counted.length * 2;
 }
 

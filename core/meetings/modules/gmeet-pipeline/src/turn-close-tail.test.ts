@@ -89,6 +89,18 @@ async function main() {
     check('the earlier text is published instead', confirmed.join(' | ') === 'dat wisten we niet');
   }
 
+  console.log('a segmentation close while an idle decode is in flight');
+  {
+    const { mgr, submitted, confirmed, speak, submit } = setup();
+    speak(3);
+    now += 16_000;
+    await submit();   // idle submit, in flight
+    await mgr.flushSpeaker(KEY, true, mgr.getBufferStartMs(KEY) + 1500);
+    mgr.handleTranscriptionResult(KEY, 'dat wisten we niet en verder', 3, seg('dat wisten we niet en verder', 3));
+    check('only the owned audio is resubmitted', submitted.length === 2 && Math.abs(submitted[1] - 1.5) < 0.01);
+    check('the pre-trim text is not published', confirmed.length === 0);
+  }
+
   if (failures) { console.error(`\n❌ ${failures} check(s) failed`); process.exit(1); }
   console.log('\n✅ a closed turn keeps the words said after its last Whisper result');
 }
