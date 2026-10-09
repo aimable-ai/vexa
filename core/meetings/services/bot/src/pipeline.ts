@@ -572,8 +572,8 @@ const words = (s: string) =>
  *  contiguous run in the prompt = echo; the same words in another order are real speech.
  *  Whisper also reads the hint back reordered or garbled ("Pimple, Lendahand, Ludger, Bolsius"):
  *  4+ telling words of which at least two thirds are hint words is an echo too. A line that starts with
- *  the wake word is a command unless every telling word is a hint word ("Aimable, ian zein, Ludger
- *  Visser"); "Aimable" and words of 3 letters or less ("van", "de", "Pim") don't count. */
+ *  the wake word is a command unless every word after it is a hint word ("Aimable, ian zein, Ludger
+ *  Visser"); otherwise "Aimable" and words of 3 letters or less ("van", "de", "Pim") don't count. */
 export function isPromptEcho(text: string, prompt?: string, hint?: string): boolean {
   const said = words(text);
   if (said.length < 3) return false;
@@ -583,7 +583,10 @@ export function isPromptEcho(text: string, prompt?: string, hint?: string): bool
   const hintWords = new Set(words(hint).filter(telling));
   const counted = said.filter(telling);
   const fromHint = counted.filter((w) => hintWords.has(w)).length;
-  if (said[0] === 'aimable') return counted.length >= 3 && fromHint === counted.length;
+  if (said[0] === 'aimable') {
+    const all = new Set(words(hint));
+    return counted.length >= 3 && said.slice(1).every((w) => all.has(w));
+  }
   return counted.length >= 4 && fromHint * 3 >= counted.length * 2;
 }
 

@@ -63,6 +63,20 @@ async function main() {
     check('the final decode is published', confirmed.join(' | ') === 'dat wisten we niet en dat weten we nog steeds niet');
   }
 
+  console.log('a second close while the final decode is in flight');
+  {
+    const { mgr, submitted, confirmed, speak, submit } = setup();
+    speak(3);
+    await submit();
+    mgr.handleTranscriptionResult(KEY, 'dat wisten we niet', 3, seg('dat wisten we niet', 3));
+    speak(2);
+    await mgr.flushSpeaker(KEY, true);
+    await mgr.flushSpeaker(KEY, true);   // the same stream listed twice after a slot change
+    check('no extra Whisper call', submitted.length === 2);
+    mgr.handleTranscriptionResult(KEY, 'dat wisten we niet en dat weten we nog steeds niet', 5, seg('dat wisten we niet en dat weten we nog steeds niet', 5));
+    check('the final decode is published once', confirmed.join(' | ') === 'dat wisten we niet en dat weten we nog steeds niet');
+  }
+
   console.log('final decode comes back empty');
   {
     const { mgr, confirmed, speak, submit } = setup();

@@ -189,7 +189,8 @@ async function main(): Promise<void> {
       check(`garbled hint is an echo: "${echo.slice(0, 40)}…"`, isPromptEcho(echo, undefined, hint));
     // …while speech that only uses a hint word passes.
     for (const real of ['Bijvoorbeeld Lendahand is ook DNB gereguleerd.', 'Dank u wel, Lendahand.', 'Ja, Pim Verschoor zei dat ook.',
-      'Aimable, zoek Pim Verschoor.', 'Aimable, zoek Maarten en Gunter Bolsius op.', 'Aimable, wat zei Ludger over Bolsius?', 'Joost van Bruggen hier.', 'Welkom Maarten, Gunter, Pim.',
+      'Aimable, zoek Pim Verschoor.', 'Aimable, zoek Maarten en Gunter Bolsius op.', 'Aimable, wat zei Ludger over Bolsius?',
+      'Aimable, wie is Maarten Verschoor van Lendahand?', 'Aimable, wie is Gunter van Bolsius en Lendahand?', 'Joost van Bruggen hier.', 'Welkom Maarten, Gunter, Pim.',
       'Pim Verschoor, Maarten kan ik nu zien, hij zegt bed tot 11 of bed.'])
       check(`speech with a hint word passes: "${real}"`, !isPromptEcho(real, undefined, hint));
     const realFetch = globalThis.fetch;

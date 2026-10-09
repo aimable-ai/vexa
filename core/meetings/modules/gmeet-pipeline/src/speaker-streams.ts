@@ -483,6 +483,7 @@ export class SpeakerStreamManager {
   async flushSpeaker(speakerId: string, force: boolean = false, trimAtMs?: number): Promise<void> {
     const buffer = this.buffers.get(speakerId);
     if (!buffer) return;
+    if (buffer.idleSubmitted && buffer.inFlight) return;  // the final decode is already on its way
 
     if (trimAtMs !== undefined) this.trimTailAfter(buffer, trimAtMs);
     if (buffer.totalSamples === 0) {
