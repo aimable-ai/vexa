@@ -483,6 +483,7 @@ export class SpeakerStreamManager {
   async flushSpeaker(speakerId: string, force: boolean = false, trimAtMs?: number): Promise<void> {
     const buffer = this.buffers.get(speakerId);
     if (!buffer) return;
+    if (trimAtMs === undefined && buffer.idleSubmitted && buffer.inFlight) return;  // the final decode is already on its way
 
     if (trimAtMs !== undefined) this.trimTailAfter(buffer, trimAtMs);
     if (buffer.totalSamples === 0) {
@@ -501,14 +502,8 @@ export class SpeakerStreamManager {
     // speaker's buffer start, which makes the speaker-mapper unable to attribute
     // carried words correctly. Direct submission preserves correct timing.
 
-    // Have transcript — emit and reset
-    if (buffer.lastTranscript) {
-      this.emitSegment(buffer, buffer.lastTranscript);
-      this.fullReset(buffer);
-      return;
-    }
-
-    // Have audio but no transcript — final Whisper submit
+    // Audio after the last result (the speaker went on, or a Meet slot change closed the turn
+    // mid-sentence): decode the open window once more; an earlier result stays the fallback.
     if (this.unconfirmedSamples(buffer) > 0) {
       if (buffer.inFlight) {
         // A draft request is in flight for the PRE-TRIM window. Discarding
@@ -519,7 +514,13 @@ export class SpeakerStreamManager {
         log(`[SpeakerStreams] Close while in-flight for "${buffer.speakerName}" — finalize deferred to response (${unconfirmedSec.toFixed(1)}s audio held)`);
         return;
       }
-      if (unconfirmedSec < MIN_FLUSH_AUDIO_SEC) {
+      if (unconfirmedSec >= MIN_FLUSH_AUDIO_SEC) {
+        buffer.idleSubmitted = true;
+        log(`[SpeakerStreams] Flush-submit for "${buffer.speakerName}" (${unconfirmedSec.toFixed(1)}s audio, final decode)`);
+        await this.submitBuffer(buffer);
+        if (buffer.inFlight || !buffer.lastTranscript) return;
+        buffer.idleSubmitted = false;  // skipped as silent: publish the earlier result
+      } else if (!buffer.lastTranscript) {
         // A sub-half-second remnant that never produced a transcript is a breath or a clipped
         // syllable; Whisper answers those with a stock phrase ("Dank u wel."), not words.
         log(`[SpeakerStreams] Flush-drop for "${buffer.speakerName}" (${unconfirmedSec.toFixed(1)}s audio < ${MIN_FLUSH_AUDIO_SEC}s, no transcript yet)`);
@@ -527,9 +528,11 @@ export class SpeakerStreamManager {
         this.fullReset(buffer);
         return;
       }
-      buffer.idleSubmitted = true;
-      log(`[SpeakerStreams] Flush-submit for "${buffer.speakerName}" (${unconfirmedSec.toFixed(1)}s audio, no transcript yet)`);
-      await this.submitBuffer(buffer);
+    }
+
+    if (buffer.lastTranscript) {
+      this.emitSegment(buffer, buffer.lastTranscript);
+      this.fullReset(buffer);
       return;
     }
 
