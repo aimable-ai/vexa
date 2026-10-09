@@ -582,12 +582,11 @@ export function isPromptEcho(text: string, prompt?: string, hint?: string): bool
   const telling = (w: string) => w.length > 3 && w !== 'aimable';
   const hintWords = new Set(words(hint).filter(telling));
   const counted = said.filter(telling);
-  const fromHint = counted.filter((w) => hintWords.has(w)).length;
   if (said[0] === 'aimable') {
     const all = new Set(words(hint));
     return counted.length >= 3 && said.slice(1).every((w) => all.has(w));
   }
-  return counted.length >= 4 && fromHint * 3 >= counted.length * 2;
+  return counted.length >= 4 && counted.filter((w) => hintWords.has(w)).length * 3 >= counted.length * 2;
 }
 
 /**
