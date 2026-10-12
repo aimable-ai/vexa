@@ -520,7 +520,7 @@ function createLiveTranscriberFactory(engine: Exclude<LiveEngine, null>, inv: In
 /** Other meeting bots in the roster ("Fireflies.ai Notetaker Pim", "Aimable Note taker"): never spoken. */
 const NOTETAKER = /\bnote ?taker\b|\bfireflies\b/i;
 
-/** Participant names as Whisper hint words: each name, then its organisation from "Name | Org",
+/** Participant names as Whisper hint words: each name, then its organisation (the part after the bar in "Name | Org"),
  *  deduped, comma-separated, whole terms only up to `maxChars`; other notetaker bots left out.
  *  Undefined when there are none. */
 export function participantHint(names: string[], maxChars = 300): string | undefined {
@@ -572,15 +572,17 @@ const words = (s: string) =>
  *  contiguous run in the prompt = echo; the same words in another order are real speech.
  *  Whisper also reads the hint back reordered or garbled ("Pimple, Lendahand, Ludger, Bolsius"):
  *  4+ telling words of which at least two thirds are hint words is an echo too. A line that starts with
- *  the wake word is a command; "Aimable" and words of 3 letters or less ("van", "de", "Pim") don't count. */
+ *  the wake word is a command unless every word after it is a hint word ("Aimable, ian zein, Ludger
+ *  Visser"); otherwise "Aimable" and words of 3 letters or less ("van", "de", "Pim") don't count. */
 export function isPromptEcho(text: string, prompt?: string, hint?: string): boolean {
   const said = words(text);
   if (said.length < 3) return false;
   if (prompt && ` ${words(prompt).join(' ')} `.includes(` ${said.join(' ')} `)) return true;
-  if (!hint || said[0] === 'aimable') return false;
+  if (!hint) return false;
   const telling = (w: string) => w.length > 3 && w !== 'aimable';
-  const hintWords = new Set(words(hint).filter(telling));
+  const hintWords = new Set(words(hint));
   const counted = said.filter(telling);
+  if (said[0] === 'aimable') return counted.length >= 3 && said.slice(1).every((w) => hintWords.has(w));
   return counted.length >= 4 && counted.filter((w) => hintWords.has(w)).length * 3 >= counted.length * 2;
 }
 

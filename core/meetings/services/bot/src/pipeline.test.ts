@@ -184,11 +184,13 @@ async function main(): Promise<void> {
     // AIM-2344: the hint read back reordered or garbled (meeting 247 and 220) is an echo too…
     const hint = 'UntAimable, Aimable, Lendahand, Ludger, Bolsius, Gunter, Pim Verschoor, Aimable Note taker, Maarten';
     for (const echo of ['Pimple, Lendahand, Ludger, Bolsius, Gunter Pimper Verschoor, Aimable Note taker.',
-      'Apoio, Aimable, Lendahand, Ludger, Bolsius, Gunter Pim Thank you.', 'Marend, Ludger, Bolsius, Gunter Pim Verschoor'])
+      'Apoio, Aimable, Lendahand, Ludger, Bolsius, Gunter Pim Thank you.', 'Marend, Ludger, Bolsius, Gunter Pim Verschoor',
+      'Aimable, Ludger, Bolsius, Gunter Pim Verschoor'])
       check(`garbled hint is an echo: "${echo.slice(0, 40)}…"`, isPromptEcho(echo, undefined, hint));
     // …while speech that only uses a hint word passes.
     for (const real of ['Bijvoorbeeld Lendahand is ook DNB gereguleerd.', 'Dank u wel, Lendahand.', 'Ja, Pim Verschoor zei dat ook.',
-      'Aimable, zoek Pim Verschoor.', 'Aimable, zoek Maarten en Gunter Bolsius op.', 'Joost van Bruggen hier.', 'Welkom Maarten, Gunter, Pim.',
+      'Aimable, zoek Pim Verschoor.', 'Aimable, zoek Maarten en Gunter Bolsius op.', 'Aimable, wat zei Ludger over Bolsius?',
+      'Aimable, wie is Maarten Verschoor van Lendahand?', 'Aimable, wie is Gunter van Bolsius en Lendahand?', 'Joost van Bruggen hier.', 'Welkom Maarten, Gunter, Pim.',
       'Pim Verschoor, Maarten kan ik nu zien, hij zegt bed tot 11 of bed.'])
       check(`speech with a hint word passes: "${real}"`, !isPromptEcho(real, undefined, hint));
     const realFetch = globalThis.fetch;
