@@ -284,6 +284,9 @@ async def transcribe_audio(
     timestamp_granularities: str = Form("segment"),
     max_speech_duration_s: Optional[str] = Form(None),
     min_silence_duration_ms: Optional[str] = Form(None),
+    # Anti-loop settings tuned for the live lane; a post-meeting pass can relax them per request.
+    repetition_penalty: Optional[str] = Form(None),
+    no_repeat_ngram_size: Optional[str] = Form(None),
     transcription_tier_form: Optional[str] = Form(None, alias="transcription_tier"),
     task: str = Form("transcribe"),
     _: bool = Depends(verify_api_token)
@@ -420,11 +423,14 @@ async def transcribe_audio(
         # Per-request VAD overrides (with defaults from env)
         req_max_speech = float(max_speech_duration_s) if max_speech_duration_s else VAD_MAX_SPEECH_DURATION_S
         req_min_silence = int(min_silence_duration_ms) if min_silence_duration_ms else VAD_MIN_SILENCE_DURATION_MS
+        req_repetition_penalty = float(repetition_penalty) if repetition_penalty else REPETITION_PENALTY
+        req_no_repeat_ngram = int(no_repeat_ngram_size) if no_repeat_ngram_size else NO_REPEAT_NGRAM_SIZE
 
         logger.info(
             f"Worker {WORKER_ID} starting transcription - requested_temp: {requested_temp}, "
             f"temps: {temps}, language: {language}, task: {task}, vad_filter: {VAD_FILTER}, "
-            f"max_speech={req_max_speech}s, min_silence={req_min_silence}ms"
+            f"max_speech={req_max_speech}s, min_silence={req_min_silence}ms, "
+            f"repetition_penalty={req_repetition_penalty}, no_repeat_ngram_size={req_no_repeat_ngram}"
         )
 
         best: Optional[Tuple[str, str, float, List[Dict[str, Any]]]] = None
@@ -448,8 +454,8 @@ async def transcribe_audio(
                     no_speech_threshold=NO_SPEECH_THRESHOLD,
                     condition_on_previous_text=CONDITION_ON_PREVIOUS_TEXT,
                     prompt_reset_on_temperature=PROMPT_RESET_ON_TEMPERATURE,
-                    repetition_penalty=REPETITION_PENALTY,
-                    no_repeat_ngram_size=NO_REPEAT_NGRAM_SIZE,
+                    repetition_penalty=req_repetition_penalty,
+                    no_repeat_ngram_size=req_no_repeat_ngram,
                     vad_filter=VAD_FILTER,
                     vad_parameters={
                         "threshold": VAD_FILTER_THRESHOLD,
