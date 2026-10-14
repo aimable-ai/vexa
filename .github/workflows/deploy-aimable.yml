@@ -13,7 +13,7 @@ name: Deploy Aimable (vexa 0.12)
 
 on:
   push:
-    branches: [aim-1467-vexa-012-port]
+    branches: [main]
     paths:
       - core/meetings/services/meeting-api/**
       - core/meetings/contracts/**
@@ -69,7 +69,7 @@ jobs:
   meeting-api:
     needs: changes
     # :deploy goes to production, so only from the deployed branch.
-    if: needs.changes.outputs.meeting_api == 'true' && github.ref == 'refs/heads/aim-1467-vexa-012-port'
+    if: needs.changes.outputs.meeting_api == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -104,7 +104,7 @@ jobs:
   # the classic docker driver can see (same as release-images.yml).
   bot:
     needs: changes
-    if: needs.changes.outputs.bot == 'true' && github.ref == 'refs/heads/aim-1467-vexa-012-port'
+    if: needs.changes.outputs.bot == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
