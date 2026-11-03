@@ -6,7 +6,8 @@ import {
   googleInitialAdmissionIndicators,
   googleWaitingRoomIndicators,
   googleRejectionIndicators,
-  googleConsentPromptIndicators
+  googleConsentPromptIndicators,
+  googleKnockEndedIndicators
 } from "./selectors";
 
 // AdmissionError + AdmissionOutcome moved to ../shared/admission so every platform (jitsi/zoom/
@@ -74,7 +75,7 @@ export const CAPTCHA_SOLVE_GRACE_MS = 120_000;
 // bot's pages never share the clock and nothing leaks after the page is gone.
 const captchaSuppressionSince = new WeakMap<object, number>();
 
-export type GoogleRejectionReason = "host_denial" | "error_page" | "captcha_unsolved";
+export type GoogleRejectionReason = "host_denial" | "knock_ended" | "left_meeting" | "error_page" | "captcha_unsolved";
 export type GoogleRejectionVerdict = {
   rejected: boolean;
   reason: GoogleRejectionReason | null;
@@ -86,6 +87,8 @@ export type GoogleRejectionVerdict = {
  *
  *  1. EXPLICIT host-denial copy visible → REJECTED (`host_denial`), whatever else is on
  *     the page. A reCAPTCHA element cannot overturn a host's "no" (#840).
+ *  1b. Page left meet.google.com → REJECTED (`left_meeting`); "Return to home screen"
+ *     without waiting-room copy → REJECTED (`knock_ended`). Meet ended the knock itself.
  *  2. Ambiguous error affordance + LIVE captcha challenge → not rejected, stay for solve,
  *     but only within CAPTCHA_SOLVE_GRACE_MS of the first suppression.
  *  3. Grace expired → REJECTED (`captcha_unsolved`): terminal beats hanging.
@@ -112,6 +115,21 @@ export async function classifyGoogleRejection(
       captchaSuppressionSince.delete(page as unknown as object);
       log(`🚨 Google Meet admission rejection detected: explicit host denial "${selector}" (wins over any reCAPTCHA element on the page)`);
       return { rejected: true, reason: "host_denial", selector };
+    }
+
+    let host = "";
+    try { host = new URL(page.url()).hostname; } catch { /* about:blank etc. */ }
+    if (host && host !== "meet.google.com") {
+      captchaSuppressionSince.delete(page as unknown as object);
+      log(`🚨 Google Meet sent the bot away before admission: page is now ${page.url()}`);
+      return { rejected: true, reason: "left_meeting", selector: null };
+    }
+    for (const selector of googleKnockEndedIndicators) {
+      if (!(await isVisible(selector))) continue;
+      if (await checkForWaitingRoomIndicators(page)) break;
+      captchaSuppressionSince.delete(page as unknown as object);
+      log(`🚨 Google Meet ended the knock: "${selector}" visible without waiting-room copy`);
+      return { rejected: true, reason: "knock_ended", selector };
     }
 
     // PASS 2 — ambiguous error affordances; these, and only these, may be re-read as
@@ -329,6 +347,8 @@ export async function hasConsentPrompt(page: Page): Promise<boolean> {
 // re-knock), which the JoinDriver records as `awaiting_admission_rejected`.
 const REJECTION_MESSAGE: Record<GoogleRejectionReason, string> = {
   host_denial: "Bot admission was rejected by meeting admin",
+  knock_ended: "Google Meet refused the bot's request to join (no host decision)",
+  left_meeting: "Google Meet sent the bot away from the meeting before it was admitted",
   error_page: "Bot admission was rejected by meeting admin",
   captcha_unsolved: `Bot faced a reCAPTCHA challenge that went unsolved for ${Math.round(CAPTCHA_SOLVE_GRACE_MS / 1000)}s alongside a rejection screen`,
 };
