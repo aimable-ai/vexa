@@ -98,8 +98,6 @@ export const googleRejectionIndicators: string[] = [
   'text=can\'t join this call',
   'text=can’t join this call', // typographic apostrophe (live Meet copy)
   'text=cannot join this call',
-  'text=can\'t join this video call',
-  'text=can’t join this video call',
   'text=Ask to join again',
   'button:has-text("Ask to join again")',
 
