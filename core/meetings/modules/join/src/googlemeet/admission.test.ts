@@ -169,6 +169,16 @@ async function outcomeOf(run: Promise<unknown>, watchdogMs = 10_000): Promise<st
     await checkForGoogleRejection(mockPage([], false, [], 'https://workspace.google.com/products/meet/?hl=en')),
     true,
   );
+  await check(
+    'NEG-CTRL: chrome-error page (network drop) → NOT a rejection',
+    await checkForGoogleRejection(mockPage([], false, [], 'chrome-error://chromewebdata/')),
+    false,
+  );
+  await check(
+    'NEG-CTRL: about:blank → NOT a rejection',
+    await checkForGoogleRejection(mockPage([], false, [], 'about:blank')),
+    false,
+  );
   {
     const got = await outcomeOf(waitForGoogleMeetingAdmission(mockPage(KNOCK_ENDED), 20_000, {} as any));
     await check(

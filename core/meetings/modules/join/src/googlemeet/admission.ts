@@ -117,9 +117,14 @@ export async function classifyGoogleRejection(
       return { rejected: true, reason: "host_denial", selector };
     }
 
-    let host = "";
-    try { host = new URL(page.url()).hostname; } catch { /* about:blank etc. */ }
-    if (host && host !== "meet.google.com") {
+    // Only a real web page counts: chrome-error:// (network drop) and about:blank are not
+    // Meet sending the bot away.
+    let leftMeet = false;
+    try {
+      const u = new URL(page.url());
+      leftMeet = (u.protocol === "https:" || u.protocol === "http:") && u.hostname !== "meet.google.com";
+    } catch { /* unparsable URL */ }
+    if (leftMeet) {
       captchaSuppressionSince.delete(page as unknown as object);
       log(`🚨 Google Meet sent the bot away before admission: page is now ${page.url()}`);
       return { rejected: true, reason: "left_meeting", selector: null };
