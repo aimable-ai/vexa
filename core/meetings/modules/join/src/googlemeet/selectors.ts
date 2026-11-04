@@ -57,7 +57,7 @@ export const googleKnockEndedIndicators: string[] = [
 // Meet refused the knock itself (join harness on bbb, 29 Oct 2026; prod meeting 34824): right after
 // "Ask to join" / "Join now" its CreateMeetingDevice call answers HTTP 403, the page throws
 // `DisconnectedError, EndCause = 72, StartupCode = 200`, and the lobby becomes "You can't join this
-// video call" with a "Return to home screen" button (a waiting indicator, #471). No meeting device
+// video call" with a "Return to home screen" button. No meeting device
 // exists, so the host has nothing to admit. Admission checks this before the waiting room.
 export const googleJoinRefusedIndicators: string[] = [
   "text=You can't join this video call",

@@ -319,7 +319,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     ? { probeSecondary: () => pingRedis(inv.redisUrl) }
     : undefined;
 
-  const startedAtMs = Number(env.BOT_STARTED_AT_MS) || Date.now();
+  // Set by entrypoint.sh; without it (no entrypoint to restart the worker) the check is always false.
+  const startedAtMs = Number(env.BOT_STARTED_AT_MS);
   const orchestrator = createOrchestrator(inv, {
     restartJoin: (reason) => shouldRestartJoin(reason, startedAtMs, Date.now()),
     lifecycle,

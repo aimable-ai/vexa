@@ -13,7 +13,7 @@ import {
 // AdmissionError + AdmissionOutcome moved to ../shared/admission so every platform (jitsi/zoom/
 // teams) throws the SAME typed error the JoinDriver maps, without one platform depending on another.
 import { AdmissionError } from "../shared/admission";
-import { throwIfGoogleJoinRefused, checkForGoogleJoinRefused } from "./refusal";
+import { throwIfGoogleJoinRefused } from "./refusal";
 
 // A LIVE reCAPTCHA challenge is a VISIBLE, challenge-sized `iframe[src*="recaptcha"]` —
 // the "I'm not a robot" anchor or the opened bframe. Frame-URL presence is NOT a
@@ -314,15 +314,13 @@ export async function checkForGoogleAdmissionSilent(page: Page): Promise<boolean
   return await checkForGoogleAdmissionIndicators(page);
 }
 
-// Helper function to check for waiting room indicators. Meet's refusal screen ("You can't join this
-// video call", refusal.ts) carries "Return to home screen" too, and can render between a poll's
-// refusal check and this one: a refused page is never the waiting room.
+// Helper function to check for waiting room indicators
 export async function checkForWaitingRoomIndicators(page: Page): Promise<boolean> {
   for (const waitingIndicator of googleWaitingRoomIndicators) {
     try {
       const element = await page.locator(waitingIndicator).first();
       if (await element.isVisible()) {
-        return !(await checkForGoogleJoinRefused(page));
+        return true;
       }
     } catch {
       continue;
@@ -364,6 +362,8 @@ const REJECTION_MESSAGE: Record<GoogleRejectionReason, string> = {
 async function throwIfGoogleAdmissionRejected(page: Page, context: string): Promise<void> {
   const verdict = await classifyGoogleRejection(page);
   if (verdict.rejected) {
+    // Meet's refusal screen can render between a poll's refusal check and this one.
+    if (verdict.reason === "knock_ended") await throwIfGoogleJoinRefused(page, context);
     log(`🚨 Bot admission concluded terminal for the Google Meet meeting (${verdict.reason}, ${context})`);
     throw new AdmissionError("denial", REJECTION_MESSAGE[verdict.reason!]);
   }
@@ -419,8 +419,7 @@ export async function waitForGoogleMeetingAdmission(
       await triggerEscalation(botConfig, "consent_required");
     }
 
-    // Meet may refuse the knock outright ("You can't join this video call", see refusal.ts). Its
-    // screen carries "Return to home screen", a waiting indicator, so this runs before that check.
+    // Meet may refuse the knock outright ("You can't join this video call", see refusal.ts).
     await throwIfGoogleJoinRefused(page, "admission start");
 
     log("Bot not yet admitted - checking for Google Meet waiting room indicators...");

@@ -392,13 +392,24 @@ async function outcomeOf(run: Promise<unknown>, watchdogMs = 10_000): Promise<st
     setHooks({});
     check('refused knock → no awaiting_admission state reported', states.includes('awaiting_admission'), false, JSON.stringify(states));
   }
-  // The refusal screen can render between a poll's refusal check and its waiting-room check (live,
-  // b-v2a-4, 29 Oct 17:04:52Z): the waiting-room predicate itself must not read it as the lobby.
-  await check(
-    'refusal screen ("You can\'t join" + "Return to home screen") → not the waiting room',
-    await checkForWaitingRoomIndicators(mockPage([REFUSED_COPY, 'button:has-text("Return to home screen")'])),
-    false,
-  );
+  // The refusal can arrive between a poll's refusal check and its rejection check. It must still end
+  // as a refusal (re-knocked), not as knock_ended (final).
+  {
+    resetEscalation();
+    const listeners: ((r: any) => void)[] = [];
+    const page = mockPage(['button:has-text("Return to home screen")']);
+    page.on = (ev: string, fn: (r: any) => void) => { if (ev === 'response') listeners.push(fn); };
+    watchGoogleJoinRefusal(page);
+    const locator = page.locator;
+    page.locator = (selector: string) => {
+      if (selector.includes('Return to home')) {
+        for (const fn of listeners) fn({ status: () => 403, url: () => 'https://meet.google.com/$rpc/google.rtc.meetings.v1.MeetingDeviceService/CreateMeetingDevice' });
+      }
+      return locator(selector);
+    };
+    const err = await waitForGoogleMeetingAdmission(page, 20_000, {} as any).catch((e) => e);
+    check('refusal racing the rejection check → refused, not knock_ended', err instanceof GoogleJoinRefusedError, true, String(err?.message));
+  }
   await check(
     'normal lobby ("Asking to be let in" + "Return to home screen") → waiting room (control)',
     await checkForWaitingRoomIndicators(mockPage(['text=Asking to be let in', 'button:has-text("Return to home screen")'])),

@@ -64,6 +64,7 @@ check('refused, inside the window → restart', shouldRestartJoin(`${GOOGLE_JOIN
 check('refused, window over → no restart', !shouldRestartJoin(`${GOOGLE_JOIN_REFUSED}: refused`, 0, JOIN_RESTART_WINDOW_MS));
 check('any other reason → no restart', !shouldRestartJoin('host denied', 0, 0));
 check('no reason → no restart', !shouldRestartJoin(undefined, 0, 0));
+check('no entrypoint start time → no restart', !shouldRestartJoin(`${GOOGLE_JOIN_REFUSED}: refused`, Number(undefined), 0));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
