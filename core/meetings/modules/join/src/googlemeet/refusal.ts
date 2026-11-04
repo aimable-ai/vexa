@@ -25,7 +25,7 @@ import { log } from "../_host";
 import { AdmissionError } from "../shared/admission";
 import { googleJoinRefusedIndicators } from "./selectors";
 
-/** Reason code at the head of every refusal message; join evidence reads it as a platform refusal. */
+/** Reason code at the head of every refusal message; the bot restarts its worker on it. */
 export const GOOGLE_JOIN_REFUSED = "google_meet_join_refused";
 
 /** Knocks per join, the first included. Meet's refusal is flaky; a meeting that refuses every one of

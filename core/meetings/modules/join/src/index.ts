@@ -154,9 +154,9 @@ export { joinGoogleMeeting, waitForGoogleMeetingAdmission, checkForGoogleAdmissi
 // (AuthSessionError, an AdmissionError subclass) as the permanent `auth_session_missing` — never
 // collapsed into a transient (retried) `join_failure` (G1).
 export { AdmissionError } from "./shared/admission";
-// Meet refusing the knock itself ("You can't join this video call") — a typed `denial` whose message
-// starts with GOOGLE_JOIN_REFUSED, after GOOGLE_JOIN_MAX_KNOCKS knocks (googlemeet/refusal.ts).
-export { GoogleJoinRefusedError, GOOGLE_JOIN_REFUSED, GOOGLE_JOIN_MAX_KNOCKS } from "./googlemeet/refusal";
+// Meet refusing the knock itself ("You can't join this video call"): a typed `denial` whose message
+// starts with this code (googlemeet/refusal.ts).
+export { GOOGLE_JOIN_REFUSED } from "./googlemeet/refusal";
 export type { AdmissionOutcome } from "./shared/admission";
 export { AuthSessionError } from "./googlemeet/join";
 export { joinMicrosoftTeams, waitForTeamsMeetingAdmission, checkForTeamsAdmissionSilent, prepareForTeamsRecording, leaveMicrosoftTeams, startTeamsRemovalMonitor };

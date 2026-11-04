@@ -23,7 +23,7 @@ import { wantsVirtualCamera } from './virtual-camera.js';
  *  bots start about 2 minutes before the meeting, so this covers its first 10 minutes. */
 export const JOIN_RESTART_WINDOW_MS = 12 * 60_000;
 
-/** Meet's refusal sticks to a bot, not to a knock, so a refused join restarts with a fresh browser. */
+/** A join Meet kept refusing restarts with a fresh browser: live, fresh bots got through where more knocks didn't. */
 export function shouldRestartJoin(reason: string | undefined, startedAtMs: number, nowMs: number): boolean {
   return !!reason?.startsWith(GOOGLE_JOIN_REFUSED) && nowMs - startedAtMs < JOIN_RESTART_WINDOW_MS;
 }
