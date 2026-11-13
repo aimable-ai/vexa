@@ -46,6 +46,8 @@
 import { JSDOM } from 'jsdom';
 import {
   googleJoinButtonSelectors,
+  googleNameInputSelectors,
+  googleContinueAsGuestSelectors,
   googleLobbyIconGlyphSelectors,
   googleLobbyCtaMaxLabelChars,
 } from './selectors';
@@ -53,6 +55,7 @@ import {
   findLobbyPrimaryCta,
   waitForAnySelector,
   waitForLobbyCta,
+  waitForGuestNameInput,
   STRUCTURAL_CTA_ORIGIN,
 } from './join';
 
@@ -378,6 +381,34 @@ const isCta = (el: Element | null) => el !== null && el.getAttribute('data-cta')
     assert(/Mégse/.test(message) && /Kérvényezés/.test(message),
       'the visible text-button labels are recorded — the next occurrence is a one-look diagnosis');
     console.log(`    last_error.reason would read: ${message}`);
+  }
+
+  console.log('\n=== 7. The "Continue as guest" gate is clicked, then the name field is used ===');
+  {
+    const nameSel = googleNameInputSelectors[0];
+    const guestSel = googleContinueAsGuestSelectors[0];
+
+    // Plain lobby: the name field is there; the gate is never clicked.
+    const clicks: string[] = [];
+    const plain = await waitForGuestNameInput(
+      mockPage({ visible: [nameSel] }) as any, async (_h, l) => { clicks.push(l); }, 5000);
+    assert(plain.selector === nameSel && clicks.length === 0, 'plain lobby: name field resolved, nothing clicked');
+
+    // Guest gate: no name field until "Continue as guest" is clicked.
+    const visible = [guestSel];
+    const gated = await waitForGuestNameInput(
+      mockPage({ visible }) as any,
+      async (_h, l) => { clicks.push(l); visible.splice(0, visible.length, nameSel); },
+      5000);
+    assert(clicks.join() === 'continue_as_guest', 'guest gate: "Continue as guest" clicked once');
+    assert(gated.selector === nameSel, 'guest gate: the name field behind it is resolved');
+
+    // Gate clicked but no name field ever appears: a loud name-input miss, not a hang.
+    let message = '';
+    try {
+      await waitForGuestNameInput(mockPage({ visible: [guestSel] }) as any, async () => {}, 300);
+    } catch (e: any) { message = String(e?.message || e); }
+    assert(/name input/.test(message), 'guest gate with no name field after the click fails as a name-input miss');
   }
 
   console.log(`\n=== summary: ${passed} passed, ${failed} failed ===`);

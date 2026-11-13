@@ -383,6 +383,14 @@ export const googleNameInputSelectors: string[] = [
   'input[placeholder*="Name"]'
 ];
 
+// Guest pre-join gate: some anonymous lobbies show "Continue as guest" (and
+// "Sign in with Google") instead of the name field; clicking it reveals the
+// field. English text is correct by construction now the UI locale is pinned (#856).
+export const googleContinueAsGuestSelectors: string[] = [
+  'button:has-text("Continue as guest")',
+  '[role="button"]:has-text("Continue as guest")'
+];
+
 // Authenticated-lobby primary CTA — "Join now" / "Switch here" / "Ask to join".
 // Same ordering rule as googleJoinButtonSelectors above: ordered resolution makes
 // list position authoritative, so the EXACT text selectors come FIRST and the
