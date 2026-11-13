@@ -3,6 +3,7 @@ import { log, randomDelay, callJoiningCallback } from "../_host";
 import { BotConfig } from "../_host";
 import {
   googleNameInputSelectors,
+  googleContinueAsGuestSelectors,
   googleJoinButtonSelectors,
   googleMicrophoneButtonSelectors,
   googleCameraButtonSelectors,
@@ -235,6 +236,27 @@ export async function waitForAnySelector(
   } while (Date.now() - started < timeoutMs);
 
   throw new Error(await describeSelectorMiss(page, selectors, timeoutMs, label, null));
+}
+
+/**
+ * Resolve the anonymous lobby's name field. Some lobbies first show a
+ * "Continue as guest" gate with no name field; clicking it reveals the field.
+ * Name selectors come first, so the plain lobby never touches the gate.
+ */
+export async function waitForGuestNameInput(
+  page: Page,
+  click: (handle: ElementHandle<Element>, label: string) => Promise<void>,
+  timeoutMs: number,
+  guard?: () => Promise<void>
+): Promise<{ handle: ElementHandle<Element>; selector: string }> {
+  const started = Date.now();
+  const hit = await waitForAnySelector(
+    page, [...googleNameInputSelectors, ...googleContinueAsGuestSelectors], timeoutMs, "name input", guard);
+  if (!googleContinueAsGuestSelectors.includes(hit.selector)) return hit;
+  await click(hit.handle, "continue_as_guest");
+  log("Clicked 'Continue as guest'.");
+  const left = Math.max(timeoutMs - (Date.now() - started), 10000);
+  return waitForAnySelector(page, googleNameInputSelectors, left, "name input", guard);
 }
 
 /**
@@ -472,11 +494,10 @@ export async function joinGoogleMeeting(
     // Anonymous flow: enter bot name and ask to join
     log("Attempting to find name input field...");
 
-    const { handle: nameHandle, selector: nameFieldSelector } = await waitForAnySelector(
+    const { handle: nameHandle, selector: nameFieldSelector } = await waitForGuestNameInput(
       page,
-      googleNameInputSelectors,
+      clickHandle,
       120000,
-      "name input",
       refused("lobby, name input")
     );
     log("Name input field found.");
