@@ -114,7 +114,7 @@ async function browserSide(): Promise<void> {
 
     check('meet: no forced video line in an audio-only offer', r.offersVideo === false);
     const b = await probe(null, url);
-    if (b) check('no avatar → blank navy tile (not Chrome test pattern)', near(b.center, [12, 29, 63]), String(b.center));
+    if (b) check('no avatar → blank navy tile (not Chrome test pattern)', near(b.center, [21, 42, 85]), String(b.center));
   } finally {
     server.close();
   }

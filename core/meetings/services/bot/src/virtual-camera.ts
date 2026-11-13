@@ -64,7 +64,12 @@ export function buildVirtualCameraInitScript(avatar: string | null): string {
     canvas.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
     var ctx = canvas.getContext('2d');
     var paint = function (img) {
-      ctx.fillStyle = '#0C1D3F'; // Aimable navy: a white tile glared next to camera tiles (AIM-2330)
+      // Aimable navy, a touch lighter in the middle: Meet reads a flat dark frame as a covered lens
+      // ("Camera might be blocked") and hides the tile (AIM-2804); a white tile glared (AIM-2330).
+      var g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, W * 0.6);
+      g.addColorStop(0, '#152A55');
+      g.addColorStop(1, '#0C1D3F');
+      ctx.fillStyle = g;
       ctx.fillRect(0, 0, W, H);
       if (!img) return;
       var iw = img.naturalWidth || 512, ih = img.naturalHeight || 512;
