@@ -112,8 +112,6 @@ export class GoogleKnockExpiredError extends AdmissionError {
   }
 }
 
-/** Requests the host can see per join, the first included. */
-export const GOOGLE_MEET_MAX_REQUESTS = 3;
 /** Ask again only with this much lobby budget left … */
 const REQUEST_MIN_BUDGET_MS = 60_000;
 /** … and only after Meet kept the ended request open this long, so a fast end never loops. */
@@ -121,9 +119,9 @@ const REQUEST_MIN_OPEN_MS = 120_000;
 
 /**
  * Run one knock (`knock` = join click + admission wait) and knock again while Meet refuses it, up to
- * GOOGLE_JOIN_MAX_KNOCKS, or after Meet ends an unanswered request, up to GOOGLE_MEET_MAX_REQUESTS.
- * Any other outcome — admitted, denied by the host, our own lobby timeout, a crash — ends the loop
- * as it is. `knock` receives the lobby budget still left, so re-knocks never extend the wait the
+ * GOOGLE_JOIN_MAX_KNOCKS, or after Meet ends an unanswered request while the budget has room. Once
+ * the host has seen a request, refusals end the join as that expired request. Any other outcome —
+ * admitted, denied by the host, our own lobby timeout, a crash — ends the loop as it is. `knock` receives the lobby budget still left, so re-knocks never extend the wait the
  * control plane issued.
  */
 export async function knockUntilGoogleAccepts(
@@ -134,7 +132,7 @@ export async function knockUntilGoogleAccepts(
 ): Promise<boolean> {
   const deadline = now() + timeoutMs;
   let refusals = 0;
-  let requests = 0;
+  let expired: GoogleKnockExpiredError | undefined;
   for (;;) {
     resetGoogleJoinRefusal(page);
     const knockedAt = now();
@@ -142,16 +140,17 @@ export async function knockUntilGoogleAccepts(
       return await knock(Math.max(deadline - knockedAt, 0));
     } catch (e) {
       if (e instanceof GoogleKnockExpiredError) {
-        requests++;
+        expired = e;
         const open = now() - knockedAt, left = deadline - now();
-        if (requests >= GOOGLE_MEET_MAX_REQUESTS || left < REQUEST_MIN_BUDGET_MS || open < REQUEST_MIN_OPEN_MS) throw e;
-        log(`🔁 Google Meet ended join request ${requests} unanswered after ${Math.round(open / 1000)} s; asking again with ${Math.round(left / 1000)} s of the lobby budget left`);
+        if (left < REQUEST_MIN_BUDGET_MS || open < REQUEST_MIN_OPEN_MS) throw e;
+        log(`🔁 Google Meet ended a join request unanswered after ${Math.round(open / 1000)} s; asking again with ${Math.round(left / 1000)} s of the lobby budget left`);
         continue;
       }
       if (!(e instanceof GoogleJoinRefusedError)) throw e;
       refusals++;
       if (refusals >= GOOGLE_JOIN_MAX_KNOCKS || deadline - now() <= 0) {
-        throw new GoogleJoinRefusedError(e.evidence, refusals);
+        // The host already saw a request: end as that, not as a refusal that restarts the worker.
+        throw expired ?? new GoogleJoinRefusedError(e.evidence, refusals);
       }
       log(`🔁 Google Meet refused knock ${refusals} of ${GOOGLE_JOIN_MAX_KNOCKS} (${e.evidence}); knocking again`);
     }
