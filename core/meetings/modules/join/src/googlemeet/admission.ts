@@ -14,7 +14,7 @@ import {
 // AdmissionError + AdmissionOutcome moved to ../shared/admission so every platform (jitsi/zoom/
 // teams) throws the SAME typed error the JoinDriver maps, without one platform depending on another.
 import { AdmissionError } from "../shared/admission";
-import { throwIfGoogleJoinRefused } from "./refusal";
+import { throwIfGoogleJoinRefused, GoogleKnockExpiredError } from "./refusal";
 
 // A LIVE reCAPTCHA challenge is a VISIBLE, challenge-sized `iframe[src*="recaptcha"]` —
 // the "I'm not a robot" anchor or the opened bframe. Frame-URL presence is NOT a
@@ -383,6 +383,9 @@ async function throwIfGoogleAdmissionRejected(page: Page, context: string): Prom
     // Meet's refusal screen can render between a poll's refusal check and this one.
     if (verdict.reason === "knock_ended") await throwIfGoogleJoinRefused(page, context);
     log(`🚨 Bot admission concluded terminal for the Google Meet meeting (${verdict.reason}, ${context})`);
+    if (verdict.reason === "knock_ended" || verdict.reason === "left_meeting") {
+      throw new GoogleKnockExpiredError(REJECTION_MESSAGE[verdict.reason]);
+    }
     throw new AdmissionError("denial", REJECTION_MESSAGE[verdict.reason!]);
   }
 }
