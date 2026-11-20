@@ -192,8 +192,8 @@ async function outcomeOf(run: Promise<unknown>, watchdogMs = 10_000): Promise<st
   {
     const got = await outcomeOf(waitForGoogleMeetingAdmission(mockPage(KNOCK_ENDED), 20_000, {} as any));
     await check(
-      "shipped waitForGoogleMeetingAdmission(knock ended) → AdmissionError('denial')",
-      got === 'AdmissionError:denial',
+      "shipped waitForGoogleMeetingAdmission(knock ended) → AdmissionError('lobby_timeout')",
+      got === 'AdmissionError:lobby_timeout',
       true,
       got,
     );

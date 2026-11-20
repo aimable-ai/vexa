@@ -384,7 +384,7 @@ async function throwIfGoogleAdmissionRejected(page: Page, context: string): Prom
     if (verdict.reason === "knock_ended") await throwIfGoogleJoinRefused(page, context);
     log(`🚨 Bot admission concluded terminal for the Google Meet meeting (${verdict.reason}, ${context})`);
     if (verdict.reason === "knock_ended" || verdict.reason === "left_meeting") {
-      throw new GoogleKnockExpiredError(REJECTION_MESSAGE[verdict.reason]);
+      throw new GoogleKnockExpiredError(verdict.reason);
     }
     throw new AdmissionError("denial", REJECTION_MESSAGE[verdict.reason!]);
   }
