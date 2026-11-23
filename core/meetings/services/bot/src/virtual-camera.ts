@@ -5,7 +5,7 @@
  * getVirtualCameraInitScript), narrowed to what a static avatar needs:
  *   • a hidden canvas with the avatar drawn on it, kept emitting frames;
  *   • getUserMedia({video}) answers with the canvas track, enumerateDevices lists a camera;
- *   • addTrack / replaceTrack swap any outgoing video track for the canvas track;
+ *   • addTrack / replaceTrack swap any outgoing video track for a clone of the canvas track;
  *   • Teams only: createOffer makes sure a send-capable video transceiver carries the canvas
  *     (Teams light meetings otherwise offer m=video inactive and never publish the camera).
  * The RTCPeerConnection constructor is deliberately NOT replaced: the 0.12 Meet roster/audio
@@ -89,11 +89,18 @@ export function buildVirtualCameraInitScript(avatar: string | null): string {
     var attach = function () { document.body ? document.body.appendChild(canvas) : document.addEventListener('DOMContentLoaded', attach); };
     attach();
 
+    // The canvas track itself never leaves this script: the page and every sender get their own
+    // clone, so a platform stopping an old camera track (camera off, then on again) only ends
+    // that clone, never the source the next clone is made from.
+    var ours = new WeakSet();
+    var own = function () { var t = track().clone(); ours.add(t); return t; };
+    var forSender = function (t) { return t && t.kind === 'video' && !ours.has(t) ? own() : t; };
+
     var md = navigator.mediaDevices;
     var gum = md.getUserMedia.bind(md);
     md.getUserMedia = async function (c) {
       if (!c || !c.video) return gum(c);
-      var out = new MediaStream([track().clone()]);
+      var out = new MediaStream([own()]);
       if (c.audio) {
         try { (await gum({ audio: c.audio })).getAudioTracks().forEach(function (t) { out.addTrack(t); }); } catch (e) {}
       }
@@ -111,11 +118,11 @@ export function buildVirtualCameraInitScript(avatar: string | null): string {
     var addTrack = RTCPeerConnection.prototype.addTrack;
     RTCPeerConnection.prototype.addTrack = function (t) {
       var rest = Array.prototype.slice.call(arguments, 1);
-      return addTrack.apply(this, [t && t.kind === 'video' ? track() : t].concat(rest));
+      return addTrack.apply(this, [forSender(t)].concat(rest));
     };
     var replaceTrack = RTCRtpSender.prototype.replaceTrack;
     RTCRtpSender.prototype.replaceTrack = function (t) {
-      return replaceTrack.call(this, t && t.kind === 'video' && t.id !== track().id ? track() : t);
+      return replaceTrack.call(this, forSender(t));
     };
     (window.logBot || console.log)('[vcam] virtual camera stream installed (avatar: ' + (src ? 'yes' : 'blank') + ')');
   } catch (e) {
