@@ -57,6 +57,11 @@ const PROBE = `(async () => {
   const other2 = document.createElement('canvas').captureStream().getVideoTracks()[0];
   await sender.replaceTrack(other2);
   const swappedOnReplace = sender.track !== other2;
+  // Camera off then on: the page stops the track it sent; a new camera must still be live.
+  sender.track.stop();
+  const again = (await navigator.mediaDevices.getUserMedia({ video: true })).getVideoTracks()[0];
+  await sender.replaceTrack(again);
+  const liveAfterRestart = again.readyState === 'live' && sender.track.readyState === 'live';
   pc.close();
   // Teams light meetings: an audio-only connection must still offer a sending video line.
   const pc2 = new RTCPeerConnection();
@@ -66,7 +71,7 @@ const PROBE = `(async () => {
   const videoLine = sdp.split('m=').find((m) => m.startsWith('video')) || '';
   const offersVideo = /a=(sendrecv|sendonly)/.test(videoLine);
   return { offersVideo, hasCamera: devices.some((d) => d.kind === 'videoinput'), videoTracks: s.getVideoTracks().length,
-    size: [c.width, c.height], center: px(c.width / 2, c.height / 2), corner: px(5, 5), swappedOnAdd, swappedOnReplace };
+    size: [c.width, c.height], center: px(c.width / 2, c.height / 2), corner: px(5, 5), swappedOnAdd, swappedOnReplace, liveAfterRestart };
 })()`;
 
 const near = (rgb: number[], want: number[]): boolean => rgb.every((v, i) => Math.abs(v - want[i]) <= 40);
@@ -111,6 +116,7 @@ async function browserSide(): Promise<void> {
     check('corner is the navy background', near(r.corner, [12, 29, 63]), String(r.corner));
     check('addTrack swaps outgoing video for the canvas', r.swappedOnAdd === true);
     check('replaceTrack swaps outgoing video for the canvas', r.swappedOnReplace === true);
+    check('camera off then on still sends a live canvas track', r.liveAfterRestart === true);
 
     check('meet: no forced video line in an audio-only offer', r.offersVideo === false);
     const b = await probe(null, url);
