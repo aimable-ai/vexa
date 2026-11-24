@@ -21,6 +21,8 @@ export interface LaunchPersistentOptions {
    *  context. Defaults to BOT_UI_LOCALE (env), else en-US. Keeps the page-level
    *  locale byte-identical to the --lang launch flag the caller passes in args. */
   locale?: string;
+  /** Browser binary instead of Playwright's bundled Chromium (AIM-2918: Chrome for Teams). */
+  executablePath?: string;
 }
 
 export async function launchPersistentBrowser(
@@ -31,6 +33,7 @@ export async function launchPersistentBrowser(
   const context = await chromium.launchPersistentContext(dataDir, {
     headless: opts.headless ?? false,
     ignoreDefaultArgs: ['--enable-automation'],
+    executablePath: opts.executablePath,
     args: opts.args,
     viewport: null,
     locale,

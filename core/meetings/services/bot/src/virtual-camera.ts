@@ -5,9 +5,7 @@
  * getVirtualCameraInitScript), narrowed to what a static avatar needs:
  *   • a hidden canvas with the avatar drawn on it, kept emitting frames;
  *   • getUserMedia({video}) answers with the canvas track, enumerateDevices lists a camera;
- *   • addTrack / replaceTrack swap any outgoing video track for a clone of the canvas track;
- *   • Teams only: createOffer makes sure a send-capable video transceiver carries the canvas
- *     (Teams light meetings otherwise offer m=video inactive and never publish the camera).
+ *   • addTrack / replaceTrack swap any outgoing video track for a clone of the canvas track.
  * The RTCPeerConnection constructor is deliberately NOT replaced: the 0.12 Meet roster/audio
  * hook (installRemoteAudioHook) owns that; prototype patches coexist with it.
  *
@@ -15,10 +13,9 @@
  * cross-origin load (a CORS-less logo URL would taint the canvas / fail with crossOrigin set).
  */
 
-/** Platforms whose join flow keeps the camera on for us (@vexa/join keepCameraOn). Not Jitsi, and not
- *  Teams: publishing the canvas there makes Teams build an offer Chromium rejects (BUNDLE header-
- *  extension id collision) and the call drops ~40 s after admission (AIM-2065, 2026-09-22). */
-const VIRTUAL_CAMERA_PLATFORMS = new Set(['google_meet', 'zoom']);
+/** Platforms whose join flow keeps the camera on for us (@vexa/join keepCameraOn). Not Jitsi. Teams
+ *  only works in Chrome (H.264), which capture-bridge launches for Teams (AIM-2918). */
+const VIRTUAL_CAMERA_PLATFORMS = new Set(['google_meet', 'teams', 'zoom']);
 
 export function wantsVirtualCamera(inv: { platform: string; defaultAvatarUrl?: string }): boolean {
   return VIRTUAL_CAMERA_PLATFORMS.has(inv.platform) && !!inv.defaultAvatarUrl;

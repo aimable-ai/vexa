@@ -35,7 +35,7 @@ async function nodeSide(): Promise<void> {
 
   check('gate: google_meet + avatar', wantsVirtualCamera({ platform: 'google_meet', defaultAvatarUrl: 'https://x/a.svg' }));
   check('gate: no avatar → off', !wantsVirtualCamera({ platform: 'google_meet' }));
-  check('gate: teams → off (AIM-2065: publishing video drops the Teams call)', !wantsVirtualCamera({ platform: 'teams', defaultAvatarUrl: 'https://x/a.svg' }));
+  check('gate: teams + avatar', wantsVirtualCamera({ platform: 'teams', defaultAvatarUrl: 'https://x/a.svg' }));
   check('gate: zoom + avatar', wantsVirtualCamera({ platform: 'zoom', defaultAvatarUrl: 'https://x/a.svg' }));
   check('gate: jitsi → off', !wantsVirtualCamera({ platform: 'jitsi', defaultAvatarUrl: 'https://x/a.svg' }));
 }
