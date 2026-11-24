@@ -605,7 +605,9 @@ export async function launchBrowser(inv: Invocation): Promise<BrowserSession> {
   // joins; getJoinBrowserArgs() adds the fake-device / autoplay flags the join lane needs. The
   // join args win on conflict (later wins in Chromium arg parsing).
   const args = [...getAuthenticatedBrowserArgs(), ...getJoinBrowserArgs()];
-  const { context, page } = await launchPersistentBrowser({ dataDir, args });
+  // AIM-2918: Teams needs H.264 for the camera, which Playwright's Chromium lacks (Dockerfile).
+  const executablePath = inv.platform === 'teams' ? '/opt/chrome-linux64/chrome' : undefined;
+  const { context, page } = await launchPersistentBrowser({ dataDir, args, executablePath });
 
   // Voice-agent gate the page reads to decide whether to keep the mic hot (production parity).
   await context.addInitScript(`window.__vexa_voice_agent_enabled = ${!!inv.voiceAgentEnabled};`);

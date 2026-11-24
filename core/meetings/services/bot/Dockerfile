@@ -113,8 +113,17 @@ RUN export DEBIAN_FRONTEND=noninteractive \
        fluxbox \
        socat \
        awscli \
+       unzip \
     && rm -rf /var/lib/apt/lists/* \
     && aws --version
+
+# AIM-2918: Teams bots run Chrome for Testing, not Playwright's Chromium: Chromium has no H.264, and
+# without it Teams builds a camera offer Chromium rejects (BUNDLE header-extension id collision), so
+# the camera never connects and the call drops. Same version as /ms-playwright's Chromium (1194).
+ARG CHROME_VERSION=141.0.7390.122
+RUN curl -fsSL -o /tmp/chrome.zip "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip" \
+    && unzip -q /tmp/chrome.zip -d /opt && rm /tmp/chrome.zip \
+    && /opt/chrome-linux64/chrome --version
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     DISPLAY=:99 \
